@@ -1,5 +1,5 @@
 ---
-title: "Build GreyServers from Source"
+title: "Compile GreyServers from Source for BepInEx or MelonLoader"
 sidebarTitle: "Build from Source"
 description: "Clone the GreyServers repository, configure assembly paths in Directory.Build.props, and build for BepInEx or MelonLoader using the .NET SDK."
 ---
@@ -89,6 +89,10 @@ cp bin\Release\netstandard2.0\$Name.dll BepInEx\plugins\$Name\
 Compress-Archive .\BepInEx\ $Name-v
 rmdir .\BepInEx\ -Recurse
 ```
+
+<Warning>
+  The script hardcodes `bin\Release\netstandard2.0\` as the source path, but the project's `TargetFramework` in `GreyServers.csproj` is `netstandard2.1`. The actual build output lands in `bin\Release\netstandard2.1\`. Running `MakeRelease.ps1` as-is will fail at the `cp` step because the path does not exist. Until the script is updated, manually copy from `bin\Release\netstandard2.1\GreyServers.dll` instead.
+</Warning>
 
 The script:
 

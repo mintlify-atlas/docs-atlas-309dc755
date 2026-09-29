@@ -1,7 +1,7 @@
 ---
-title: "How GreyServers Unlocks All Cosmetics"
+title: "How GreyServers Unlocks Every Gorilla Tag Cosmetic"
 sidebarTitle: "Cosmetics"
-description: "How CosmeticPatch uses reflection to add every catalog item to the player's owned inventory, and how related patches prevent crashes and enable free purchases."
+description: "How GreyServers unlocks every cosmetic using reflection, patches the V2 spawner for stability, and reroutes purchases to the private PlayFab server."
 ---
 
 `CosmeticPatch` is a Harmony **Prefix** on `CosmeticsController.GetCosmeticsPlayFabCatalogData` — the method the game normally calls to fetch a player's owned item list from PlayFab. The patch returns `false` to skip the original network call entirely, replacing it with a local loop that grants every item in the game's cosmetic catalog directly to the `CosmeticsController` instance.
@@ -118,7 +118,7 @@ public class CosmeticsV2Spawner_DPatch
         {
             Debug.LogWarning($"{rig.gameObject.name} not found in dict, registering...");
             if (rig.isOfflineVRRig) dict[rig] = 0;
-            else return false; // skip unregistered remote rigs entirely
+            else return false;
         }
 
         int index = dict[rig];
@@ -126,11 +126,11 @@ public class CosmeticsV2Spawner_DPatch
             .Field("_g_loadOpInfosForRigAndCosmeticIDDicts")
             .GetValue() as Array;
 
-        // Attempt force prepare if the cosmetic data array is missing or stale
         if (allLoadOpDicts == null
             || index >= allLoadOpDicts.Length
             || allLoadOpDicts.GetValue(index) == null)
         {
+            Debug.LogWarning($"cosmetic data for rig index {index} is null; attempting force prepare...");
             traverse.Method("PrepareLoadOpInfos").GetValue();
             allLoadOpDicts = traverse
                 .Field("_g_loadOpInfosForRigAndCosmeticIDDicts")
@@ -141,8 +141,17 @@ public class CosmeticsV2Spawner_DPatch
             return false;
 
         var rigDict = allLoadOpDicts.GetValue(index) as System.Collections.IDictionary;
-        if (rigDict == null || !rigDict.Contains(playfabId))
+        if (rigDict == null)
+        {
+            Debug.LogError($"cosmetic data for rig index {index} is STILL null; skipping");
             return false;
+        }
+
+        if (!rigDict.Contains(playfabId))
+        {
+            Debug.LogWarning($"cosmetic id {playfabId} not found in spawner data; skipping");
+            return false;
+        }
 
         return true;
     }
@@ -191,13 +200,14 @@ public static class Patch_PurchaseItem
     {
         if (__instance == null) return false;
 
-        // Ignore attempts to buy the null/placeholder item
-        if (__instance.itemToBuy.isNullItem ||
-            __instance.itemToBuy.itemName == __instance.nullItem.itemName)
+        CosmeticsController controller = __instance;
+
+        if (controller.itemToBuy.isNullItem ||
+            controller.itemToBuy.itemName == controller.nullItem.itemName)
             return false;
 
-        string id = __instance.itemToBuy.itemName;
-        var cosmetic = __instance.itemToBuy;
+        string id = controller.itemToBuy.itemName;
+        var cosmetic = controller.itemToBuy;
 
         ExecuteCloudScriptRequest request = new ExecuteCloudScriptRequest
         {
@@ -209,15 +219,19 @@ public static class Patch_PurchaseItem
             request,
             result =>
             {
-                if (!__instance.allCosmeticsDict.ContainsKey(id))
-                    __instance.allCosmeticsDict.Add(id, cosmetic);
+                if (!controller.allCosmeticsDict.ContainsKey(id))
+                    controller.allCosmeticsDict.Add(id, cosmetic);
 
-                if (GorillaTagger.Instance?.offlineVRRig != null)
+                if (GorillaTagger.Instance != null &&
+                    GorillaTagger.Instance.offlineVRRig != null)
                     GorillaTagger.Instance.offlineVRRig.GetCosmeticsPlayFabCatalogData();
 
-                __instance.itemToBuy = __instance.nullItem;
+                controller.itemToBuy = controller.nullItem;
             },
-            error => { __instance.itemToBuy = __instance.nullItem; }
+            error =>
+            {
+                controller.itemToBuy = controller.nullItem;
+            }
         );
 
         return false; // skip the original purchase flow

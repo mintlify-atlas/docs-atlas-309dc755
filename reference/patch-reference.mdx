@@ -1,7 +1,7 @@
 ---
-title: "GreyServers Harmony Patch Reference"
+title: "GreyServers Harmony Patch Reference Guide"
 sidebarTitle: "Patch Reference"
-description: "Complete reference for all Harmony patches in GreyServers, including target types, methods, patch types, and runtime behaviors for each patch."
+description: "Complete reference for all 25 Harmony patches in GreyServers, with target types, methods, patch types, and runtime behaviors for each patch."
 ---
 
 This page is the complete reference for every Harmony patch shipped in GreyServers. Each entry lists the target type and method, the patch type (Prefix or Postfix), and a detailed description of what the patch does and why it is needed to operate on the Solaristy OS private server. Patches are registered automatically by `HarmonyPatches.ApplyHarmonyPatches()`, which calls `instance.PatchAll(Assembly.GetExecutingAssembly())` — no manual registration is required when adding new patches.
@@ -23,7 +23,7 @@ These patches intercept Photon and PlayFab connection calls to redirect the clie
     - `AppIdRealtime` → `7ef2fd75-edeb-4e41-9af1-cff0e7f07b3f`
     - `AppIdVoice` → `16818aa8-e19f-4cb0-a8ce-4a1fdf0ea451`
 
-    Because the parameter is passed by `ref`, the change is visible to the original method, which then connects to the correct Photon cloud region for Solaristy OS.
+    Because the parameter is passed by `ref`, the change is visible to the original method, which then connects to the correct Photon cloud region for Solaristy OS. The Prefix returns `void` and does not suppress the original method.
   </Accordion>
 
   <Accordion title="Patch_SetAuthenticationValues_ForceNone">
@@ -33,7 +33,7 @@ These patches intercept Photon and PlayFab connection calls to redirect the clie
     | Target method | `SetAuthenticationValues` |
     | Patch type | Prefix |
 
-    Forces `authValues.AuthType = CustomAuthenticationType.None` and assigns the values to `PhotonNetwork.AuthValues` before the original method runs. This prevents the official custom-auth handshake from being sent to Photon, which would be rejected by the private-server Photon app.
+    Forces `authValues.AuthType = CustomAuthenticationType.None` and assigns the values to `PhotonNetwork.AuthValues` before the original method runs. The Prefix returns `void` and does not suppress the original — it ensures the auth type is overridden even if the original method overwrites it again. This prevents the official custom-auth handshake from being sent to Photon, which would be rejected by the private-server Photon app.
   </Accordion>
 
   <Accordion title="Patch_AuthenticationParameters">
@@ -43,7 +43,7 @@ These patches intercept Photon and PlayFab connection calls to redirect the clie
     | Target method | `SetCustomAuthenticationParameters` |
     | Patch type | Prefix |
 
-    Builds a fresh `AuthenticationValues` object with `AuthType = CustomAuthenticationType.None`, populates it with the custom auth data dictionary via `SetAuthPostData`, then calls `NetworkSystem.Instance.SetAuthenticationValues`. The original method is still allowed to run after the prefix; the re-built values ensure no official token is included in the Photon auth payload.
+    Builds a fresh `AuthenticationValues` object with `AuthType = CustomAuthenticationType.None`, populates it with the custom auth data dictionary via `SetAuthPostData`, then calls `NetworkSystem.Instance.SetAuthenticationValues`. The Prefix returns `void` and does not suppress the original method; the re-built values ensure no official token is included in the Photon auth payload.
   </Accordion>
 
   <Accordion title="PlayFabAuthPatch">
@@ -53,7 +53,7 @@ These patches intercept Photon and PlayFab connection calls to redirect the clie
     | Target method | `AuthenticateWithPlayFab` |
     | Patch type | Prefix (returns `false` — skips original) |
 
-    Replaces the Steam-based login flow entirely. On first run it generates a `System.Guid` and persists it under the `PlayerPrefs` key `PlayFabCustomId`. On subsequent runs it reloads the stored GUID. It then calls `PlayFabClientAPI.LoginWithCustomID` with `CreateAccount = true` against the private PlayFab title `1457F3`. On success, it uses reflection to write `_playFabPlayerIdCache` and `_sessionTicket` onto the authenticator instance and then calls the private `AdvanceLogin` method via `AccessTools`, seamlessly continuing the normal post-login flow.
+    Replaces the Steam-based login flow entirely. On first run it generates a `System.Guid` and persists it under the `PlayerPrefs` key `PlayFabCustomId`. On subsequent runs it reloads the stored GUID. It then calls `PlayFabClientAPI.LoginWithCustomID` with `CreateAccount = true` against the private PlayFab title `1457F3`. On success, it starts a coroutine (`AdvanceLoginWithPlayFabData`) that uses `AccessTools.Field` to write `_playFabPlayerIdCache` and `_sessionTicket` onto the authenticator instance and then invokes the private `AdvanceLogin` method via `AccessTools.Method`, seamlessly continuing the normal post-login flow.
   </Accordion>
 
   <Accordion title="Patch_GetAcceptedAgreements">
@@ -201,7 +201,7 @@ These patches bypass the various terms-of-service, age-verification, and KID-che
     Sets `ControllerInputPoller.instance.leftControllerPrimary2DAxis.y = -1f` to simulate scrolling to the bottom of the agreement, and sets the private `_currentAge` field to `10f` via `Traverse`, satisfying the age requirement. Returns `false` to prevent the original `Update` logic from running.
 
     <Note>
-      This patch is derived from *ii's Stupid Menu* by Goldentrophy Software (MIT/GPL-3.0). The original copyright notice in `TOSPatches.cs` must be preserved in any distributed fork.
+      This patch is derived from *ii's Stupid Menu* by Goldentrophy Software (GPL-3.0). The original copyright notice in `TOSPatches.cs` must be preserved in any distributed fork.
     </Note>
   </Accordion>
 
@@ -312,7 +312,7 @@ These patches customise the in-game computer terminal screens and scoreboard to 
     | Target method | `SwitchToLoadingState` |
     | Patch type | Prefix (always returns `true`) |
 
-    A pass-through patch that always returns `true`, allowing the original `SwitchToLoadingState` to execute. It exists to ensure the loading state transition is not inadvertently blocked by any other patch applied lower in the chain.
+    A pass-through patch that always returns `true`, allowing the original `SwitchToLoadingState` to execute without interference from the patch pipeline.
   </Accordion>
 
   <Accordion title="ScoreboardPatch">

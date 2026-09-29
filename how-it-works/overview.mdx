@@ -1,7 +1,7 @@
 ---
-title: "How GreyServers Works: Architecture Overview"
+title: "How GreyServers Works: A Complete Architecture Overview"
 sidebarTitle: "Overview"
-description: "GreyServers patches Gorilla Tag at runtime using HarmonyLib, redirecting networking, authentication, cosmetics, and anti-cheat to the Solaristy OS private server."
+description: "GreyServers patches Gorilla Tag at runtime using HarmonyLib, redirecting networking, authentication, cosmetics, and anti-cheat to Solaristy OS."
 ---
 
 GreyServers is a BepInEx/MelonLoader mod that never touches Gorilla Tag's original files on disk. Instead, it uses **HarmonyLib** to inject Prefix and Postfix methods directly onto the game's internal classes at startup — before any game logic has a chance to run. The result is a fully patched client that connects to the Solaristy OS private server, grants every cosmetic, and bypasses the game's anti-cheat and authentication layers transparently.

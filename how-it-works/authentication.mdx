@@ -1,7 +1,7 @@
 ---
-title: "Authentication and Networking in GreyServers"
+title: "Authentication and Networking in GreyServers Explained"
 sidebarTitle: "Authentication"
-description: "How GreyServers bypasses Steam and PlayFab authentication, injects custom Photon app credentials, and connects to the Solaristy OS private server infrastructure."
+description: "How GreyServers replaces Steam and PlayFab login, injects private Photon app credentials, and disables custom auth to connect to Solaristy OS."
 ---
 
 GreyServers replaces three layers of authentication to connect to the private server infrastructure. The PlayFab title is redirected before any network call is made, the Steam/PlayFab login flow is replaced with a persistent anonymous CustomID login, and the Photon networking layer is given the private server's AppId credentials while its custom authentication requirement is disabled entirely. None of the original authentication paths are used.
@@ -276,7 +276,7 @@ public static class Patch_SubscriptionResolutionWithoutMothership
 |---|---|---|
 | `TOSPatches.Update` | `LegalAgreements.Update` | Simulates the left joystick scrolling down (`y = -1f`) and sets `_currentAge` to advance the scroll timer, effectively auto-completing the TOS scroll requirement. Returns `false` to skip the original update. |
 | `TOSPatches.PostUpdateModIO` | `ModIOTermsOfUse_v1.PostUpdate` | Calls `TurnPage(999)` to jump to the last page, simulates scroll, and resets `_currentAge` — instantly completing the mod.io TOS flow. |
-| `TOSPatches.PostUpdateAgeSlider` | `AgeSlider.PostUpdate` | Sets `_currentAge` to `21` (meeting any age requirement) then immediately resets the scroll timer to `0.1f` so the slider is treated as fully settled. |
+| `TOSPatches.PostUpdateAgeSlider` | `AgeSlider.PostUpdate` | Sets `_currentAge` to `21` (meeting any age requirement) then overwrites it a second time with `0.1f` so the field is treated as fully settled. |
 | `TOSPatches.StartOverlay` | `PrivateUIRoom.StartOverlay` | Returns `!enabled` — which is `false` when the mod is active — blocking the overlay from opening entirely. |
 | `TOSPatches.UseKID` | `KIDManager.UseKID` | Sets `__result` to `Task.FromResult(false)` and returns `false`, causing the KID (Kids Internet Design and Safety Act) manager to report that KID verification is not required. |
 
