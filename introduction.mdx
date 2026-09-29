@@ -1,0 +1,71 @@
+---
+title: "GreyServers: Gorilla Tag Private Server Mod"
+sidebarTitle: "Introduction"
+description: "GreyServers is a BepInEx and MelonLoader mod for Gorilla Tag that redirects the game to the Solaristy OS private server with all cosmetics unlocked."
+---
+
+GreyServers is a Gorilla Tag mod that redirects the game's networking, authentication, and cosmetics systems to the **Solaristy OS** private server — an independent community server completely separate from the official Gorilla Tag infrastructure. It supports both **BepInEx** and **MelonLoader** mod loaders, ships as a single compiled DLL with no configuration file required, and is identified by version **1.1.0** and GUID **`com.unixity.gorillatag.greyservers`**.
+
+<Note>
+  Playing on unofficial private servers falls outside the official Gorilla Tag Terms of Service. GreyServers connects you to Solaristy OS instead of the official servers — your official account is not involved in gameplay on this server, and official bans do not apply here.
+</Note>
+
+## What is GreyServers?
+
+GreyServers uses [HarmonyLib](https://github.com/pardeike/Harmony) to apply runtime patches to Gorilla Tag's managed assemblies the moment the game boots. Rather than modifying game files on disk, all changes live in memory for the duration of the session. The following systems are patched:
+
+- **Authentication** — The PlayFab Title ID is redirected to Solaristy OS's own title (`1457F3`), and `PlayFabAuthenticator` is patched to log in with a local custom ID instead of Steam or Oculus credentials. Photon authentication type is forced to `None`, bypassing the official server's auth checks entirely.
+- **Cosmetics** — `CosmeticsController.GetCosmeticsPlayFabCatalogData` is replaced with a prefix patch that iterates over every item in `allCosmetics` and calls `AddCosmetic` for each one, effectively unlocking the full catalog without any store transactions.
+- **Networking** — `PhotonNetwork.ConnectUsingSettings` is patched to inject Solaristy OS's Photon App IDs (`AppIdRealtime` and `AppIdVoice`) before the connection is established, routing all multiplayer traffic to the private server.
+- **Anti-cheat / ban handling** — `GorillaComputer.GeneralFailureMessage` is patched to intercept `BANNED` and `AUTHENTICATE` failure messages and silently reconnect instead of displaying an error, so official bans have no effect.
+- **TOS screens** — `LegalAgreements`, `ModIOTermsOfUse_v1`, `AgeSlider`, `PrivateUIRoom`, and `KIDManager` are all patched to auto-accept or skip the consent flow on startup.
+- **Mothership disable** — `MothershipClientApiUnity.IsEnabled` always returns `false`, and `SubscriptionManager.InitializePersonalSubscriptionData` resolves subscriptions as inactive without contacting Another Axiom's Mothership service.
+
+Because all patches are applied through HarmonyLib's `PatchAll`, they are registered under the plugin GUID `com.unixity.gorillatag.greyservers` and can be cleanly removed by calling `UnpatchSelf()` on the Harmony instance.
+
+## Supported mod loaders
+
+GreyServers is built with conditional compilation symbols so the same source tree produces a valid plugin for either mod loader. Both builds expose identical behaviour at runtime — only the bootstrap entry point differs.
+
+<Tabs>
+  <Tab title="BepInEx">
+    The BepInEx build is compiled with the `BEPINEX_RELEASE` symbol. The `Plugin` class extends `BaseUnityPlugin` and is annotated with:
+
+    ```csharp
+    [BepInPlugin("com.unixity.gorillatag.greyservers", "GreyServers", "1.1.0")]
+    ```
+
+    Initialisation happens in `Awake()`. BepInEx automatically resolves the `[BepInPlugin]` attribute and loads the plugin at game start. The plugin's `GameObject` is marked `DontDestroyOnLoad` to persist across scene loads.
+  </Tab>
+  <Tab title="MelonLoader">
+    The MelonLoader build is compiled with the `MELONLOADER_RELEASE` symbol. The `Plugin` class extends `MelonMod` and the assembly is decorated with:
+
+    ```csharp
+    [assembly: MelonInfo(typeof(GreyServers.Plugin), "GreyServers", "1.1.0", "Unixity")]
+    [assembly: MelonGame("Another Axiom", "Gorilla Tag")]
+    ```
+
+    Initialisation happens in `OnInitializeMelon()`. A dedicated `GameObject` named `"GreyServers"` is created and marked `DontDestroyOnLoad` because MelonLoader mods do not inherit from `MonoBehaviour` the same way BepInEx plugins do.
+  </Tab>
+</Tabs>
+
+## Key patches at a glance
+
+<CardGroup cols={2}>
+  <Card title="Authentication bypass" icon="key">
+    Redirects PlayFab to Title ID `1457F3` and patches `PlayFabAuthenticator` to log in with a persistent local custom ID. Photon auth type is forced to `None`, so official account credentials are never sent to the private server.
+  </Card>
+  <Card title="Cosmetics unlock" icon="shirt">
+    Replaces `CosmeticsController.GetCosmeticsPlayFabCatalogData` to call `AddCosmetic` for every item in the game's full cosmetics catalog, granting ownership of all items without any purchases.
+  </Card>
+  <Card title="Mothership disable" icon="ban">
+    Forces `MothershipClientApiUnity.IsEnabled` to return `false` and patches `SubscriptionManager` to resolve local subscription state as inactive — preventing any calls to Another Axiom's Mothership service.
+  </Card>
+  <Card title="TOS auto-accept" icon="circle-check">
+    Patches `LegalAgreements`, `ModIOTermsOfUse_v1`, `AgeSlider`, `PrivateUIRoom`, and `KIDManager` to silently skip or auto-accept all consent and age-verification screens on startup.
+  </Card>
+</CardGroup>
+
+## License
+
+GreyServers is released under the **GNU Affero General Public License v3.0 (AGPL-3.0)**. Source code and the full license text are available at [github.com/solaristygit/GreyServers](https://github.com/solaristygit/GreyServers).

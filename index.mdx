@@ -1,20 +1,60 @@
 ---
-title: "Introduction"
-description: "Welcome to your project"
+title: "GreyServers: Gorilla Tag Private Server Mod"
+sidebarTitle: "Home"
+description: "GreyServers is a lightweight Gorilla Tag mod that connects you to an independent private server with all cosmetics unlocked and no bans."
 ---
 
-Write a short description of your product here. What it does, who it's for, and what they can accomplish with it.
+GreyServers is a BepInEx and MelonLoader mod for Gorilla Tag that redirects the game to **Solaristy OS** — an independent private server where all cosmetics are freely available, Steam authentication is bypassed, and the Mothership anti-cheat is disabled. Drop it into your plugins folder and you're in.
 
-<Tip>
-  Ready to make this your own? Start by editing this page. Update your `docs.json` file to customize your site. Then fill out the [Quickstart](/quickstart) page.
-</Tip>
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install GreyServers with BepInEx or MelonLoader in just a few steps
+  </Card>
+  <Card title="Building from Source" icon="hammer" href="/building-from-source">
+    Compile GreyServers yourself targeting BepInEx or MelonLoader
+  </Card>
+  <Card title="How It Works" icon="gears" href="/how-it-works/overview">
+    Understand the Harmony patches and server redirection under the hood
+  </Card>
+  <Card title="Patch Reference" icon="book" href="/reference/patch-reference">
+    Full reference for every Harmony patch included in GreyServers
+  </Card>
+</CardGroup>
 
-<Card title="Quickstart" icon="rocket" href="/quickstart">
-  This card links to the quickstart page in your project.
-</Card>
-<Card title="Components" icon="puzzle-piece" href="https://mintlify.com/docs/components">
-  Add cards, callouts, steps, tabs, and more to design and structure your pages.
-</Card>
-<Card title="Settings" icon="gear" href="https://mintlify.com/docs/organize/settings">
-  Set your site name, branding, and navigation in the `docs.json` file.
-</Card>
+## What GreyServers does
+
+<Steps>
+  <Step title="Redirects to Solaristy OS">
+    On startup, GreyServers swaps the PlayFab title ID to `1457F3` and injects custom Photon app credentials, connecting you to the GreyServers private infrastructure instead of the official Gorilla Tag servers.
+  </Step>
+  <Step title="Authenticates anonymously">
+    Instead of Steam login, GreyServers generates a persistent random `CustomId` stored in `PlayerPrefs` and logs into PlayFab with `LoginWithCustomID` — no Steam account required.
+  </Step>
+  <Step title="Unlocks all cosmetics">
+    A Harmony prefix on `CosmeticsController.GetCosmeticsPlayFabCatalogData` adds every item in the catalog to your owned inventory automatically, including Builder Set starter pieces.
+  </Step>
+  <Step title="Removes restrictions">
+    The Mothership anti-cheat module is disabled, Terms of Service prompts are auto-accepted, and ban/authentication failure messages are suppressed so you can play without interruption.
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Dual mod-loader support" icon="plug">
+    Works with both **BepInEx** and **MelonLoader** — pick whichever you already have installed.
+  </Card>
+  <Card title="All cosmetics free" icon="shirt">
+    Every catalog item, including Builder Set pieces, is granted to your local account automatically.
+  </Card>
+  <Card title="No bans" icon="shield">
+    Running on an independent server means official ban lists don't apply.
+  </Card>
+  <Card title="Auto TOS acceptance" icon="file-signature">
+    Legal agreements, age gates, and Mod.io ToS screens are bypassed silently.
+  </Card>
+</CardGroup>
+
+<Note>
+  GreyServers is licensed under the **AGPL-3.0** license. Any modified versions you distribute must also be open-source under AGPL-3.0.
+</Note>

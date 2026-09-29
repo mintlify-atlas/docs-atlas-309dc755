@@ -1,0 +1,101 @@
+---
+title: "How GreyServers Works: Architecture Overview"
+sidebarTitle: "Overview"
+description: "GreyServers patches Gorilla Tag at runtime using HarmonyLib, redirecting networking, authentication, cosmetics, and anti-cheat to the Solaristy OS private server."
+---
+
+GreyServers is a BepInEx/MelonLoader mod that never touches Gorilla Tag's original files on disk. Instead, it uses **HarmonyLib** to inject Prefix and Postfix methods directly onto the game's internal classes at startup — before any game logic has a chance to run. The result is a fully patched client that connects to the Solaristy OS private server, grants every cosmetic, and bypasses the game's anti-cheat and authentication layers transparently.
+
+## Startup sequence
+
+<Steps>
+  <Step title="Loader bootstraps the Plugin class">
+    BepInEx or MelonLoader discovers `Plugin` in the assembly and instantiates it. Under BepInEx the Unity `Awake()` lifecycle hook fires; under MelonLoader the `OnInitializeMelon()` override is called. Both paths immediately delegate to the shared `Initialize()` method.
+  </Step>
+  <Step title="PlayFab title ID is redirected">
+    `Initialize()` overwrites the game's default PlayFab title with the private server's ID before any network call can be made:
+
+    ```csharp
+    PlayFabSettings.TitleId = "1457F3";
+    PlayFabAuthenticatorSettings.TitleId = "1457F3";
+    ```
+
+    A debug log records the old title ID so you can confirm the swap in the console.
+  </Step>
+  <Step title="All Harmony patches are applied">
+    `HarmonyPatches.ApplyHarmonyPatches()` is called, which creates a single `HarmonyLib.Harmony` instance keyed to the mod's GUID and calls:
+
+    ```csharp
+    instance.PatchAll(Assembly.GetExecutingAssembly());
+    ```
+
+    HarmonyLib scans every class in the assembly that carries a `[HarmonyPatch]` attribute and applies them atomically. From this point on, every targeted game method is intercepted.
+  </Step>
+  <Step title="Persistent GameObject is created">
+    A `GameObject` named `"GreyServers"` is marked with `DontDestroyOnLoad` so the mod's state survives scene transitions. Under BepInEx the plugin's own `gameObject` is reused; under MelonLoader a fresh `GameObject` is created explicitly because `MelonMod` does not extend `MonoBehaviour`.
+  </Step>
+</Steps>
+
+## Patch categories
+
+<CardGroup cols={2}>
+  <Card title="Networking & Auth" icon="network-wired">
+    Redirects the PlayFab title ID, replaces Steam/PlayFab login with anonymous CustomID login, injects private Photon AppId credentials, and disables Photon custom authentication so the private server accepts the client without an official token.
+  </Card>
+  <Card title="Cosmetics" icon="shirt">
+    Replaces the PlayFab catalog fetch with a local operation that grants every item in `allCosmetics`, all Builder Set starter piece sets, and the hardcoded `"Slingshot"` item. Purchase requests are re-routed to a CloudScript function on the private server so items can be acquired for free.
+  </Card>
+  <Card title="Anti-Cheat & TOS" icon="shield-halved">
+    Permanently disables the Mothership anti-cheat client by short-circuiting `MothershipClientApiUnity.IsEnabled`, resolves local subscription data as inactive without contacting Mothership, and bypasses every Terms of Service and age-verification screen.
+  </Card>
+  <Card title="UI" icon="display">
+    Patches the in-game computer startup screen to display `"Solaristy OS"` and the live player count. Null-safety guards on the scoreboard spawner and level screen prevent crashes when the private server environment differs from the official one.
+  </Card>
+</CardGroup>
+
+## HarmonyLib patch mechanics
+
+HarmonyLib offers two primary injection points on any target method:
+
+- **Prefix** — runs *before* the original method. Returning `false` skips the original entirely, letting the patch substitute its own behaviour. Returning `true` allows the original to run normally after the Prefix completes.
+- **Postfix** — runs *after* the original method, regardless of its outcome. Useful for reading or modifying the return value, or for triggering side effects once the original has finished.
+
+Here is a minimal example of a Prefix patch that replaces a method's result and skips the original:
+
+```csharp
+[HarmonyPatch(typeof(MothershipClientApiUnity), nameof(MothershipClientApiUnity.IsEnabled))]
+public static class MothershipPatch
+{
+    public static bool Prefix(ref bool __result)
+    {
+        __result = false; // force the return value to false
+        return false;     // skip the original method entirely
+    }
+}
+```
+
+The `ref bool __result` parameter is a HarmonyLib convention — any parameter named `__result` is automatically bound to the method's return value, letting a Prefix set it before the original runs.
+
+## Build flags
+
+GreyServers compiles against two different mod loaders through conditional compilation symbols:
+
+| Symbol | Base class | Entry point |
+|---|---|---|
+| `BEPINEX_RELEASE` | `BaseUnityPlugin` | `Awake()` |
+| `MELONLOADER_RELEASE` | `MelonMod` | `OnInitializeMelon()` |
+
+```csharp
+#if BEPINEX_RELEASE
+[BepInPlugin(PluginInfo.GUID, PluginInfo.Name, PluginInfo.Version)]
+public class Plugin : BaseUnityPlugin
+{
+    private void Awake() => Initialize();
+#elif MELONLOADER_RELEASE
+public class Plugin : MelonMod
+{
+    public override void OnInitializeMelon() => Initialize();
+#endif
+```
+
+The `Initialize()` method itself is identical in both builds — the preprocessor directives only affect which framework class is extended and which lifecycle hook is used to invoke it.

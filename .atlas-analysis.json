@@ -1,0 +1,63 @@
+{
+  "projectType": "general",
+  "projectName": "GreyServers",
+  "projectDescription": "A lightweight BepInEx/MelonLoader mod for Gorilla Tag that redirects the game to an unofficial private server with full cosmetics support.",
+  "theme": "aspen",
+  "primaryColor": "#6B7F8E",
+  "lightColor": "#A8C0CC",
+  "darkColor": "#2C3E50",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "installation",
+          "building-from-source"
+        ]
+      },
+      {
+        "group": "How It Works",
+        "pages": [
+          "how-it-works/overview",
+          "how-it-works/harmony-patches",
+          "how-it-works/cosmetics",
+          "how-it-works/authentication"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/patch-reference",
+          "reference/plugin-info",
+          "reference/contributing"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Redirects Gorilla Tag to an independent private server (Solaristy OS) without bans",
+    "Unlocks all cosmetics for free using Harmony patches on the CosmeticsController",
+    "Bypasses Steam/PlayFab authentication using a custom PlayFab title ID and anonymous login",
+    "Auto-accepts Terms of Service and legal agreements so players can jump in immediately",
+    "Disables the Mothership anti-cheat system for uninterrupted gameplay",
+    "Compatible with both BepInEx and MelonLoader mod loaders",
+    "Custom Gorilla Computer startup screen showing live player count"
+  ],
+  "publicApiSurface": [
+    "HarmonyPatches.ApplyHarmonyPatches()",
+    "HarmonyPatches.RemoveHarmonyPatches()",
+    "HarmonyPatches.IsPatched (property)",
+    "PluginInfo.GUID (com.unixity.gorillatag.greyservers)",
+    "PluginInfo.Name (GreyServers)",
+    "PluginInfo.Version (1.1.0)",
+    "Plugin (BepInEx BaseUnityPlugin / MelonLoader MelonMod entry point)",
+    "CosmeticPatch (Harmony prefix on CosmeticsController.GetCosmeticsPlayFabCatalogData)",
+    "PatchSteamLogin / PlayFabAuthPatch (custom ID login bypass)",
+    "MothershipPatch (disables AA.Mothership IsEnabled)",
+    "TOSPatches (auto-accepts LegalAgreements, ModIOTermsOfUse_v1, AgeSlider, KIDManager)",
+    "GorillaComputerScreenPatch (custom startup screen text)",
+    "ComputerPatch (suppresses BANNED/AUTHENTICATE failure messages)",
+    "PurchasePatch (routes item purchases through buyFreeCosmetic cloud function)"
+  ]
+}

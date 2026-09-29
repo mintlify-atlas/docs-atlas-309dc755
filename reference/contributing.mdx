@@ -1,0 +1,146 @@
+---
+title: "Contributing to GreyServers"
+sidebarTitle: "Contributing"
+description: "How to contribute Harmony patches, bug fixes, or documentation to GreyServers, including AGPL-3.0 licensing requirements and attribution obligations."
+---
+
+Contributions to GreyServers are welcome — whether you are adding a new Harmony patch, fixing a crash in an existing one, or improving documentation. Because the project is licensed under the GNU Affero General Public License v3.0 (AGPL-3.0), any version you distribute publicly must also be released as open source under the same license. Read the sections below before opening a pull request.
+
+## License Requirement
+
+GreyServers is published under **AGPL-3.0**. The key implication is the network-use clause: if you run a modified version on a server that others interact with, you must make the modified source available to those users. Practically, for a Gorilla Tag mod this means any fork you distribute — even as a compiled DLL — must include or link to the full AGPL-3.0 source.
+
+<Warning>
+  Any code copied or adapted from other open-source mods must be compatible with AGPL-3.0 and must include the original author's copyright notice and attribution. Do not incorporate GPL-incompatible code.
+</Warning>
+
+`TOSPatches.cs` includes code derived from **ii's Stupid Menu** by Goldentrophy Software, originally licensed under GPL-3.0. The original copyright block is preserved at the top of that file:
+
+```
+ii's Stupid Menu  Patches/Menu/TOSPatches.cs
+Copyright (C) 2026  Goldentrophy Software
+https://github.com/iiDk-the-actual/iis.Stupid.Menu
+```
+
+This attribution **must be preserved** in any fork or derivative that includes or modifies `TOSPatches.cs`. Removing or obscuring it violates both the GPL-3.0 terms of the upstream project and the AGPL-3.0 terms of GreyServers itself.
+
+## Setting Up the Dev Environment
+
+<Steps>
+  <Step title="Fork the repository">
+    Fork the GreyServers repository on GitHub to your own account so you have a personal copy to work from.
+  </Step>
+  <Step title="Clone your fork">
+    Clone your fork locally:
+
+    ```bash
+    git clone https://github.com/<your-username>/GreyServers.git
+    cd GreyServers
+    ```
+  </Step>
+  <Step title="Configure Directory.Build.props with your game path">
+    Open `GreyServers/Directory.Build.props` and verify that `GamePath` points to your local Gorilla Tag installation. The default is the standard Steam path on Windows:
+
+    ```xml
+    <GamePath>C:\Program Files (x86)\Steam\steamapps\common\Gorilla Tag</GamePath>
+    ```
+
+    All other paths (`GameAssemblyPath`, `BepInExAssemblyPath`, `PluginsPath`) are derived from `GamePath` and do not need to be edited separately unless your layout is non-standard. If you are building in CI, set the environment variable `CI=TRUE` — the props file will redirect all assembly references to a local `.\Libs` folder.
+  </Step>
+  <Step title="Build with the correct configuration">
+    Choose the configuration that matches your target mod loader:
+
+    ```bash
+    # For BepInEx
+    dotnet build -c BepInEx_Release
+
+    # For MelonLoader
+    dotnet build -c MelonLoader_Release
+    ```
+
+    The output DLL is written to `$(PluginsPath)`, which defaults to `<GamePath>\BepInEx\plugins`.
+  </Step>
+  <Step title="Copy the DLL and test in-game">
+    If you built with `BepInEx_Release`, the DLL is already placed in the BepInEx plugins folder by the build. For MelonLoader, copy the DLL to `<GamePath>\Mods\`. Launch Gorilla Tag and verify the startup screen shows "Solaristy OS" and that the player count is populated.
+  </Step>
+</Steps>
+
+## Adding a New Harmony Patch
+
+All patches in GreyServers are auto-discovered by `HarmonyPatches.ApplyHarmonyPatches()` via `instance.PatchAll(Assembly.GetExecutingAssembly())`. You only need to create the file — no registration is required.
+
+1. Create a new `.cs` file under `GreyServers/Patches/`.
+2. Decorate the class with `[HarmonyPatch(typeof(TargetClass), "TargetMethod")]`.
+3. Implement a `static bool Prefix(...)` (return `false` to skip the original, `true` to run it) or a `static void Postfix(...)`.
+4. Use `ref` parameters for return-value injection (`ref T __result`) and double-underscore prefixes for private field access (`___fieldName`).
+
+Minimal patch template:
+
+```csharp
+using HarmonyLib;
+
+namespace GreyServers.Patches
+{
+    [HarmonyPatch(typeof(SomeClass), "SomeMethod")]
+    internal class MyNewPatch
+    {
+        private static bool Prefix(SomeClass __instance)
+        {
+            // return false to skip original, true to run it
+            return false;
+        }
+    }
+}
+```
+
+<Tip>
+  Use `AccessTools.Field` / `AccessTools.Method` from HarmonyLib when you need to reach private members by reflection — it is more robust than raw `typeof(...).GetField(...)` because it respects inheritance and does not require `BindingFlags`.
+</Tip>
+
+If your patch overrides a method that returns a value, inject the replacement via the `ref __result` parameter in a Prefix, then return `false`:
+
+```csharp
+private static bool Prefix(ref bool __result)
+{
+    __result = false;
+    return false;
+}
+```
+
+## Code Style
+
+Match the conventions already established in the codebase:
+
+- **Patch classes**: `internal class` inside `namespace GreyServers.HarmonyPatches` or `namespace GreyServers.Patches`.
+- **Utility/static patches**: `public static class` when the patch itself exposes helpers (see `MothershipPatch`, `PlayFabAuthPatch`).
+- **Namespace choice**: use `GreyServers.Patches` for new patches in the `Patches/` folder; use `GreyServers.HarmonyPatches` only for infrastructure classes like `HarmonyPatches.cs` itself.
+- **No top-level statements** — keep explicit `namespace` declarations.
+- **Attribute style**: prefer the combined `[HarmonyPatch(typeof(T), "MethodName")]` form on a single line where possible; use the stacked multi-attribute form (as in `ComputerPatch.cs`) only when the method signature requires an overload discriminator.
+
+## Submitting a Pull Request
+
+<Steps>
+  <Step title="Create a feature branch">
+    Work on a dedicated branch rather than directly on `master`:
+
+    ```bash
+    git checkout -b patch/my-new-patch
+    ```
+  </Step>
+  <Step title="Commit your changes">
+    Keep commits focused. A single patch addition should be a single commit with a clear message describing what it targets:
+
+    ```
+    Add Patch_XYZ: suppress FooBar error on private server
+    ```
+  </Step>
+  <Step title="Open a pull request against master">
+    Push your branch and open a PR against the `master` branch of the upstream repository. In the PR description include:
+    - The target class and method your patch addresses.
+    - Why the patch is necessary on the private server.
+    - Any edge cases or fallback conditions the patch handles.
+  </Step>
+  <Step title="Include attribution for derived code">
+    If any code in your PR is adapted from another open-source mod, include the original copyright notice as a comment block at the top of the file — exactly as `TOSPatches.cs` does for ii's Stupid Menu — and confirm in the PR description that the upstream license is compatible with AGPL-3.0.
+  </Step>
+</Steps>

@@ -1,0 +1,107 @@
+---
+title: "Harmony Patches in GreyServers Explained"
+sidebarTitle: "Harmony Patches"
+description: "A deep dive into the HarmonyPatches class, how PatchAll discovers and applies every patch in the assembly, and the full patch lifecycle including removal."
+---
+
+`HarmonyPatches.cs` is the central patch manager for GreyServers. It creates a single `HarmonyLib.Harmony` instance keyed to the mod's GUID (`com.unixity.gorillatag.greyservers`) and, through one `PatchAll` call, applies every Harmony-annotated patch class found anywhere in the executing assembly. This design means adding a new patch file is enough — no manual registration is required.
+
+## The HarmonyPatches class
+
+The full source of `HarmonyPatches.cs` is reproduced below:
+
+```csharp
+using System;
+using System.Reflection;
+using HarmonyLib;
+
+namespace GreyServers.HarmonyPatches
+{
+    public class HarmonyPatches
+    {
+        public static bool IsPatched { get; private set; }
+        private static HarmonyLib.Harmony instance;
+
+        internal static void ApplyHarmonyPatches()
+        {
+            if (!IsPatched)
+            {
+                if (instance == null)
+                {
+                    instance = new HarmonyLib.Harmony(PluginInfo.GUID);
+                }
+                instance.PatchAll(Assembly.GetExecutingAssembly());
+                IsPatched = true;
+            }
+        }
+
+        internal static void RemoveHarmonyPatches()
+        {
+            if (instance != null && IsPatched)
+            {
+                instance.UnpatchSelf();
+                IsPatched = false;
+            }
+        }
+    }
+}
+```
+
+**`ApplyHarmonyPatches()`** is guarded by the `IsPatched` flag. If called a second time — for example if the loader somehow triggers `Initialize()` twice — the method returns immediately without creating a duplicate `Harmony` instance or double-patching any methods. The `Harmony` instance itself is also lazily initialized: it is only constructed the first time patches are actually needed.
+
+**`RemoveHarmonyPatches()`** calls `instance.UnpatchSelf()`, which is the HarmonyLib API for removing every patch applied by this specific `Harmony` instance (identified by GUID) without affecting patches registered by other mods. After removal, `IsPatched` is reset to `false` so `ApplyHarmonyPatches()` can be called again cleanly if needed.
+
+## How patches are discovered
+
+```csharp
+instance.PatchAll(Assembly.GetExecutingAssembly());
+```
+
+When `PatchAll` is called with the current assembly, HarmonyLib uses .NET reflection to enumerate every type in that assembly. For each type decorated with `[HarmonyPatch]`, HarmonyLib reads the attribute arguments to determine which target type and method to intercept, then wires up any `Prefix`, `Postfix`, or `Transpiler` static methods it finds inside that class.
+
+This means every patch file in the `GreyServers.Patches` and `GreyServers.HarmonyPatches` namespaces — `CosmeticPatch`, `PlayFabAuthPatch`, `MothershipPatch`, `TOSPatches`, and all the rest — is picked up automatically from the single `PatchAll` call in `HarmonyPatches.cs`.
+
+## Patch application flow
+
+<Steps>
+  <Step title="Plugin.Initialize() calls ApplyHarmonyPatches()">
+    The entry point (`Awake()` on BepInEx, `OnInitializeMelon()` on MelonLoader) delegates to `Initialize()`, which calls `HarmonyPatches.ApplyHarmonyPatches()` after setting the PlayFab title ID.
+  </Step>
+  <Step title="Guard check — IsPatched">
+    The method checks `if (!IsPatched)`. If patches have already been applied in this session the method exits immediately, preventing any double-patching side effects.
+  </Step>
+  <Step title="Harmony instance is created">
+    If `instance == null`, a new `HarmonyLib.Harmony` is constructed with `PluginInfo.GUID` (`"com.unixity.gorillatag.greyservers"`) as its unique identifier. This GUID is what `UnpatchSelf()` uses later to target only this mod's patches.
+  </Step>
+  <Step title="PatchAll scans the assembly">
+    `instance.PatchAll(Assembly.GetExecutingAssembly())` reflects over every type in the GreyServers DLL, finds all `[HarmonyPatch]`-annotated classes, and applies their `Prefix`/`Postfix` methods to the corresponding game methods in memory.
+  </Step>
+  <Step title="IsPatched is set to true">
+    The flag is set after `PatchAll` returns, marking the session as patched and ensuring the guard check blocks any future redundant calls.
+  </Step>
+</Steps>
+
+## Removing patches
+
+`RemoveHarmonyPatches()` provides a clean way to undo everything GreyServers has applied at runtime:
+
+```csharp
+internal static void RemoveHarmonyPatches()
+{
+    if (instance != null && IsPatched)
+    {
+        instance.UnpatchSelf();
+        IsPatched = false;
+    }
+}
+```
+
+Calling this method restores all patched game methods to their original IL — Gorilla Tag would behave exactly as if GreyServers were not loaded. This is useful for:
+
+- **Toggling the mod off at runtime** without restarting the game.
+- **Debugging** — temporarily removing patches to confirm a behaviour originates from GreyServers and not the base game.
+- **Safe shutdown** — some mod frameworks call a teardown hook on unload; wiring `RemoveHarmonyPatches()` there prevents stale patches from affecting other mods.
+
+<Note>
+  Many patches in GreyServers target internal or private game methods that are not part of any public API. HarmonyLib locates these using .NET reflection with `BindingFlags.NonPublic | BindingFlags.Instance` (or the `AccessTools` helpers which apply those flags automatically). For example, `CosmeticPatch` retrieves the private `AddCosmetic` method via `typeof(CosmeticsController).GetMethod("AddCosmetic", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public)` before invoking it through reflection. This means patch targets can break if the game obfuscates or renames those members in a future update.
+</Note>

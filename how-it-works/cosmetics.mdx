@@ -1,0 +1,262 @@
+---
+title: "How GreyServers Unlocks All Cosmetics"
+sidebarTitle: "Cosmetics"
+description: "How CosmeticPatch uses reflection to add every catalog item to the player's owned inventory, and how related patches prevent crashes and enable free purchases."
+---
+
+`CosmeticPatch` is a Harmony **Prefix** on `CosmeticsController.GetCosmeticsPlayFabCatalogData` — the method the game normally calls to fetch a player's owned item list from PlayFab. The patch returns `false` to skip the original network call entirely, replacing it with a local loop that grants every item in the game's cosmetic catalog directly to the `CosmeticsController` instance.
+
+## CosmeticPatch
+
+The patch resolves four private members via reflection before doing anything else. If any lookup fails the Prefix returns `true` (falling through to the original), so the game degrades gracefully rather than crashing:
+
+```csharp
+[HarmonyPatch(typeof(CosmeticsController), "GetCosmeticsPlayFabCatalogData")]
+internal class CosmeticPatch
+{
+    private static readonly MethodInfo AddCosmeticMethod =
+        typeof(CosmeticsController).GetMethod(
+            "AddCosmetic",
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+
+    private static readonly FieldInfo CosAgeDict =
+        typeof(CosmeticsController).GetField(
+            "_playerOwnedCosmeticsAge",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+    private static readonly FieldInfo BuilderSetsField =
+        typeof(BuilderSetManager).GetField(
+            "_starterPieceSets",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+    private static readonly FieldInfo InitField =
+        typeof(CosmeticsController).GetField(
+            "initializedCosmetics",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+
+    static bool Prefix(CosmeticsController __instance)
+    {
+        if (AddCosmeticMethod == null) return true;
+        if (CosAgeDict == null) return true;
+        if (BuilderSetsField == null) return true;
+        if (InitField == null) return true;
+
+        void AddCosmetic(string id) =>
+            AddCosmeticMethod.Invoke(__instance, new object[] { id });
+
+        var OwnedCosmeticsAge =
+            (Dictionary<string, int>)CosAgeDict.GetValue(__instance);
+
+        // Grant the hardcoded Slingshot item
+        AddCosmetic("Slingshot");
+
+        // Grant all Builder Set starter piece sets
+        if (BuilderSetManager.instance != null)
+        {
+            var starterSets =
+                (List<BuilderPieceSet>)BuilderSetsField.GetValue(BuilderSetManager.instance);
+            if (starterSets != null)
+            {
+                foreach (var set in starterSets)
+                {
+                    if (set != null && !string.IsNullOrEmpty(set.playfabID))
+                        AddCosmetic(set.playfabID);
+                }
+            }
+        }
+
+        // Grant every item in allCosmetics
+        foreach (var item in __instance.allCosmetics)
+        {
+            if (!string.IsNullOrEmpty(item.itemName))
+            {
+                AddCosmetic(item.itemName);
+                if (OwnedCosmeticsAge != null)
+                    OwnedCosmeticsAge[item.itemName] = 0;
+            }
+        }
+
+        InitField.SetValue(__instance, true);
+        return false; // skip the original PlayFab network call
+    }
+}
+```
+
+The four private members used:
+
+| Member | Type | Purpose |
+|---|---|---|
+| `AddCosmetic` | `MethodInfo` | Private method that registers one item as owned |
+| `_playerOwnedCosmeticsAge` | `FieldInfo` | Dictionary tracking the "age" (sort order) of each owned item |
+| `_starterPieceSets` | `FieldInfo` | Private list of Builder Set piece sets on `BuilderSetManager` |
+| `initializedCosmetics` | `FieldInfo` | Bool flag the controller checks before showing the wardrobe |
+
+## What gets unlocked
+
+- **`"Slingshot"`** — hardcoded by item name; granted first regardless of the catalog contents.
+- **All Builder Set starter piece sets** — iterated from `BuilderSetManager.instance._starterPieceSets`; each set's `playfabID` is passed to `AddCosmetic`.
+- **Every item in `allCosmetics`** — the full cosmetic catalog on the `CosmeticsController` instance is iterated; each non-empty `itemName` is granted and its age entry in `_playerOwnedCosmeticsAge` is set to `0`.
+
+## CosmeticsV2Spawner patch
+
+`CosmeticsV2Spawner_DPatch` is a Prefix on `CosmeticsV2Spawner_Dirty.ProcessLoadOpInfos`. The V2 spawner maintains an internal dictionary (`_gVRRigDatasIndexByRig`) that maps `VRRig` instances to integer indices. When a rig is not present in that dictionary — which can happen on the private server where the player pool differs from the official one — the spawner would normally throw a `KeyNotFoundException` and break cosmetic loading for all players.
+
+The patch resolves this by checking the dictionary before the original runs:
+
+```csharp
+[HarmonyPatch(typeof(CosmeticsV2Spawner_Dirty), "ProcessLoadOpInfos")]
+public class CosmeticsV2Spawner_DPatch
+{
+    static bool Prefix(VRRig rig, string playfabId)
+    {
+        var traverse = Traverse.Create(typeof(CosmeticsV2Spawner_Dirty));
+        var dict = traverse.Field("_gVRRigDatasIndexByRig")
+                           .GetValue<Dictionary<VRRig, int>>();
+        if (dict == null) return true;
+
+        if (!dict.ContainsKey(rig))
+        {
+            Debug.LogWarning($"{rig.gameObject.name} not found in dict, registering...");
+            if (rig.isOfflineVRRig) dict[rig] = 0;
+            else return false; // skip unregistered remote rigs entirely
+        }
+
+        int index = dict[rig];
+        var allLoadOpDicts = traverse
+            .Field("_g_loadOpInfosForRigAndCosmeticIDDicts")
+            .GetValue() as Array;
+
+        // Attempt force prepare if the cosmetic data array is missing or stale
+        if (allLoadOpDicts == null
+            || index >= allLoadOpDicts.Length
+            || allLoadOpDicts.GetValue(index) == null)
+        {
+            traverse.Method("PrepareLoadOpInfos").GetValue();
+            allLoadOpDicts = traverse
+                .Field("_g_loadOpInfosForRigAndCosmeticIDDicts")
+                .GetValue() as Array;
+        }
+
+        if (allLoadOpDicts == null || index >= allLoadOpDicts.Length)
+            return false;
+
+        var rigDict = allLoadOpDicts.GetValue(index) as System.Collections.IDictionary;
+        if (rigDict == null || !rigDict.Contains(playfabId))
+            return false;
+
+        return true;
+    }
+}
+```
+
+The offline VRRig (the local player) is always assigned index `0` if it is missing. Unknown remote rigs are skipped rather than crashing the process.
+
+## PackedIDArrayPatch
+
+`PackedIDArrayPatch` is a Prefix on `CosmeticsController.CosmeticSet.ToPackedIDArray`. When a `CosmeticSet` is serialized over the network, the game calls this method to pack all held item names into a compact ID array. If any slot in `items` has a null or empty `itemName` — which can occur when the owned-cosmetics list is populated wholesale by `CosmeticPatch` — the serializer throws or produces a corrupt packet.
+
+The patch replaces every such slot with `CosmeticsController.nullItem` before serialization proceeds:
+
+```csharp
+[HarmonyPatch(typeof(CosmeticsController.CosmeticSet), "ToPackedIDArray")]
+public class PackedIDArrayPatch
+{
+    private static void Prefix(CosmeticsController.CosmeticSet __instance)
+    {
+        if (__instance.items == null) return;
+
+        var controller = CosmeticsController.instance;
+        if (controller == null) return;
+
+        for (int i = 0; i < __instance.items.Length; i++)
+        {
+            if (string.IsNullOrEmpty(__instance.items[i].itemName))
+                __instance.items[i] = controller.nullItem;
+        }
+    }
+}
+```
+
+`nullItem` is the game's canonical placeholder cosmetic — substituting it keeps the serialized array well-formed without dropping or corrupting other slots.
+
+## PurchasePatch
+
+`PurchasePatch` intercepts `CosmeticsController.PurchaseItem` and re-routes it through a CloudScript function on the private PlayFab title so that any cosmetic can be "purchased" for free. The original method — which would contact the official store and check currency — is skipped entirely.
+
+```csharp
+[HarmonyPatch(typeof(CosmeticsController), "PurchaseItem")]
+public static class Patch_PurchaseItem
+{
+    private static bool Prefix(CosmeticsController __instance)
+    {
+        if (__instance == null) return false;
+
+        // Ignore attempts to buy the null/placeholder item
+        if (__instance.itemToBuy.isNullItem ||
+            __instance.itemToBuy.itemName == __instance.nullItem.itemName)
+            return false;
+
+        string id = __instance.itemToBuy.itemName;
+        var cosmetic = __instance.itemToBuy;
+
+        ExecuteCloudScriptRequest request = new ExecuteCloudScriptRequest
+        {
+            FunctionName = "buyFreeCosmetic",
+            FunctionParameter = new { itemID = id }
+        };
+
+        PlayFabClientAPI.ExecuteCloudScript(
+            request,
+            result =>
+            {
+                if (!__instance.allCosmeticsDict.ContainsKey(id))
+                    __instance.allCosmeticsDict.Add(id, cosmetic);
+
+                if (GorillaTagger.Instance?.offlineVRRig != null)
+                    GorillaTagger.Instance.offlineVRRig.GetCosmeticsPlayFabCatalogData();
+
+                __instance.itemToBuy = __instance.nullItem;
+            },
+            error => { __instance.itemToBuy = __instance.nullItem; }
+        );
+
+        return false; // skip the original purchase flow
+    }
+}
+```
+
+On success the item is added to `allCosmeticsDict` (if not already present) and `GetCosmeticsPlayFabCatalogData` is triggered on the offline VRRig so the wardrobe reflects the new ownership immediately.
+
+## Progression initialization
+
+`ProgressionPatch` is a **Postfix** on `PlayFabAuthenticator.AdvanceLogin`. After login completes, the wardrobe is not automatically populated — the game expects a sequence of async calls to run in the right order. The Postfix fires all of them:
+
+```csharp
+[HarmonyPatch(typeof(PlayFabAuthenticator), "AdvanceLogin")]
+public static class Patch_AdvanceLogin
+{
+    private static void Postfix(PlayFabAuthenticator __instance)
+    {
+        if (CosmeticsController.instance != null)
+        {
+            CosmeticsController.instance.GetCurrencyBalance();
+
+            if (GorillaTagger.Instance != null &&
+                GorillaTagger.Instance.offlineVRRig != null)
+            {
+                GorillaTagger.Instance.offlineVRRig.GetCosmeticsPlayFabCatalogData();
+            }
+
+            CosmeticsController.instance.Initialize();
+            CosmeticsController.instance.UpdateWardrobeModelsAndButtons();
+        }
+    }
+}
+```
+
+The call order matters:
+
+1. `GetCurrencyBalance()` — fetches the player's Shiny Rock balance from the private server.
+2. `GetCosmeticsPlayFabCatalogData()` — triggers `CosmeticPatch`, which grants every item.
+3. `Initialize()` — marks the controller as ready and performs any deferred setup.
+4. `UpdateWardrobeModelsAndButtons()` — refreshes the 3D wardrobe models and UI buttons to reflect the newly owned items.

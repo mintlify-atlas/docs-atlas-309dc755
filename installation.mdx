@@ -1,0 +1,111 @@
+---
+title: "Install GreyServers for Gorilla Tag"
+sidebarTitle: "Installation"
+description: "Learn how to install the pre-built GreyServers DLL into BepInEx or MelonLoader and verify the mod is running on Solaristy OS."
+---
+
+Installing GreyServers is a single file-copy operation — drop the compiled `GreyServers.dll` into the correct plugins folder for your mod loader and launch the game. There is no configuration file to edit, no registry entry to create, and no additional runtime to install. The mod's GUID is **`com.unixity.gorillatag.greyservers`** and the current release version is **1.1.0**.
+
+<Warning>
+  Removing or replacing `GreyServers.dll` from the plugins folder disables the mod entirely. Without the DLL present, Gorilla Tag will revert to connecting to the official servers on the next launch.
+</Warning>
+
+## Prerequisites
+
+Before installing, make sure you have the following in place:
+
+- **Gorilla Tag** installed via Steam (the default install path is `C:\Program Files (x86)\Steam\steamapps\common\Gorilla Tag`).
+- Either **BepInEx** or **MelonLoader** installed into the Gorilla Tag directory — GreyServers does not ship a mod loader, so you must install one yourself first.
+
+## BepInEx installation
+
+<Steps>
+  <Step title="Download GreyServers.dll">
+    Go to the [GreyServers releases page](https://github.com/solaristygit/GreyServers/releases) and download the latest `GreyServers.dll` from the **BepInEx** release asset.
+  </Step>
+  <Step title="Navigate to the BepInEx plugins folder">
+    Open File Explorer and go to:
+
+    ```
+    <Gorilla Tag install>\BepInEx\plugins\
+    ```
+
+    For the default Steam install path this is:
+
+    ```
+    C:\Program Files (x86)\Steam\steamapps\common\Gorilla Tag\BepInEx\plugins\
+    ```
+  </Step>
+  <Step title="Create the GreyServers subfolder">
+    Inside `plugins\`, create a new folder named **`GreyServers`**. BepInEx allows plugins to live in named subdirectories — using a dedicated folder keeps things tidy and is the convention followed by the official release package.
+
+    ```
+    plugins\
+    └── GreyServers\
+    ```
+  </Step>
+  <Step title="Copy the DLL into the folder">
+    Move or copy `GreyServers.dll` into the `GreyServers\` folder you just created:
+
+    ```
+    plugins\
+    └── GreyServers\
+        └── GreyServers.dll
+    ```
+  </Step>
+  <Step title="Launch Gorilla Tag">
+    Start Gorilla Tag normally through Steam. BepInEx scans the `plugins\` tree on startup and loads `GreyServers.dll` automatically — no further steps are needed.
+  </Step>
+</Steps>
+
+## MelonLoader installation
+
+<Steps>
+  <Step title="Download the MelonLoader build">
+    Go to the [GreyServers releases page](https://github.com/solaristygit/GreyServers/releases) and download the `GreyServers.dll` built for **MelonLoader**. This is a separate binary compiled with the `MELONLOADER_RELEASE` symbol — it is not interchangeable with the BepInEx DLL.
+  </Step>
+  <Step title="Navigate to the Mods folder">
+    Open File Explorer and go to the `Mods\` folder inside your Gorilla Tag install directory:
+
+    ```
+    <Gorilla Tag install>\Mods\
+    ```
+
+    For the default Steam install path:
+
+    ```
+    C:\Program Files (x86)\Steam\steamapps\common\Gorilla Tag\Mods\
+    ```
+
+    If the `Mods\` folder does not exist, MelonLoader creates it on first launch — run Gorilla Tag once with MelonLoader installed before placing the DLL.
+  </Step>
+  <Step title="Copy GreyServers.dll into Mods">
+    Place `GreyServers.dll` directly inside the `Mods\` folder (no subfolder required):
+
+    ```
+    Mods\
+    └── GreyServers.dll
+    ```
+  </Step>
+  <Step title="Launch Gorilla Tag">
+    Start Gorilla Tag through Steam. MelonLoader enumerates the `Mods\` folder at startup, detects the `[MelonGame("Another Axiom", "Gorilla Tag")]` attribute, and loads the mod automatically.
+  </Step>
+</Steps>
+
+## Verifying the mod is active
+
+After the game loads, walk up to the **Gorilla Computer** — the terminal inside the game world. If GreyServers loaded successfully, the startup screen will read:
+
+```
+Solaristy OS
+
+<N> PLAYERS ONLINE
+
+0 USERS BANNED YESTERDAY
+
+PRESS ANY KEY TO BEGIN
+```
+
+The live player count is pulled from `PhotonNetwork.CountOfPlayers` on the Solaristy OS server in real time. Seeing this screen confirms that the mod has applied its patches, authentication has been redirected to the private server, and you are ready to play.
+
+If the screen still shows the default Gorilla Tag startup text, double-check that the DLL is in the correct folder for your mod loader and that the mod loader itself is installed and active.

@@ -1,0 +1,87 @@
+---
+title: "GreyServers Plugin Info and Constants"
+sidebarTitle: "Plugin Info"
+description: "Reference for GreyServers' mod GUID, name, version, build configurations, and key runtime constants including PlayFab title ID and Photon app IDs."
+---
+
+The `PluginInfo` class and the startup logic in `Plugin.cs` serve two purposes: they identify the mod to whichever mod-loader framework is active (BepInEx or MelonLoader), and they set the PlayFab and Photon credentials that every patch in the assembly relies on at runtime. Understanding these values is essential when building from source or when debugging connection issues against the Solaristy OS private server.
+
+## Mod Identity
+
+The three constants in `PluginInfo` are consumed by the `[BepInPlugin]` attribute, the `[MelonInfo]` assembly attribute, and by `HarmonyPatches.ApplyHarmonyPatches()` (which passes `PluginInfo.GUID` as the Harmony ID).
+
+| Constant | Value |
+|---|---|
+| `GUID` | `com.unixity.gorillatag.greyservers` |
+| `Name` | `GreyServers` |
+| `Version` | `1.1.0` |
+
+```csharp
+namespace GreyServers
+{
+    /// <summary>
+    /// This class is used to provide information about your mod to BepInEx.
+    /// </summary>
+    class PluginInfo
+    {
+        public const string GUID = "com.unixity.gorillatag.greyservers";
+        public const string Name = "GreyServers";
+        public const string Version = "1.1.0";
+    }
+}
+```
+
+## Build Configurations
+
+The project defines four build configurations in `GreyServers.csproj`. The preprocessor symbols control which base class `Plugin` inherits from and which entry-point method is compiled in.
+
+| Configuration | Preprocessor Symbol | Target |
+|---|---|---|
+| `Debug` | *(none)* | Development (no mod-loader base class compiled) |
+| `Release` | *(none)* | Production (no mod-loader base class compiled) |
+| `BepInEx_Release` | `BEPINEX_RELEASE` | BepInEx |
+| `MelonLoader_Release` | `MELONLOADER_RELEASE` | MelonLoader |
+
+When `BEPINEX_RELEASE` is defined, `Plugin` extends `BaseUnityPlugin` and the `[BepInPlugin(...)]` attribute is applied. When `MELONLOADER_RELEASE` is defined, `Plugin` extends `MelonMod` and the `[assembly: MelonInfo(...)]` / `[assembly: MelonGame(...)]` attributes are emitted instead. Always build with one of the two release configurations when producing a distributable DLL.
+
+<Tip>
+  To build for BepInEx run `dotnet build -c BepInEx_Release`. To build for MelonLoader run `dotnet build -c MelonLoader_Release`. The output DLL is placed in the path defined by `$(PluginsPath)` in `Directory.Build.props`.
+</Tip>
+
+## Runtime Constants
+
+These values are hard-coded in `Plugin.cs` and `PatchSteamLogin.cs`. They are applied during `Initialize()` before any patches run, and are re-confirmed inside individual patches where needed.
+
+| Constant | Value | Set in |
+|---|---|---|
+| PlayFab Title ID | `1457F3` | `Plugin.Initialize()`, `PlayFabAuthPatch.Prefix()` |
+| Photon AppId Realtime | `7ef2fd75-edeb-4e41-9af1-cff0e7f07b3f` | `Patch_PhotonNetwork_Connect.Prefix()` |
+| Photon AppId Voice | `16818aa8-e19f-4cb0-a8ce-4a1fdf0ea451` | `Patch_PhotonNetwork_Connect.Prefix()` |
+| PlayerPrefs key for CustomId | `PlayFabCustomId` | `PlayFabAuthPatch.Prefix()` |
+
+`Plugin.Initialize()` sets both `PlayFabSettings.TitleId` and `PlayFabAuthenticatorSettings.TitleId` to `1457F3` before `ApplyHarmonyPatches()` is called, so even if a patch fires before the PlayFab SDK is fully configured the correct title is already active.
+
+<Note>
+  The `PlayFabCustomId` `PlayerPrefs` key persists across game sessions. The first time a player launches Gorilla Tag with GreyServers installed a new `System.Guid` is generated and stored. Subsequent launches reuse the same GUID, providing a stable account identity on the private server without requiring a Steam token.
+</Note>
+
+## MelonLoader Assembly Attributes
+
+When compiling under `MELONLOADER_RELEASE`, the following assembly-level attributes are emitted at the top of `Plugin.cs`:
+
+```csharp
+[assembly: MelonInfo(typeof(GreyServers.Plugin), PluginInfo.Name, PluginInfo.Version, "Unixity")]
+[assembly: MelonGame("Another Axiom", "Gorilla Tag")]
+```
+
+`MelonInfo` registers the mod with the MelonLoader bootstrap. `MelonGame` restricts the mod so MelonLoader only loads it when the running game is *Gorilla Tag* by *Another Axiom*.
+
+## Target Framework
+
+GreyServers targets **`netstandard2.1`**, as declared in `GreyServers.csproj`:
+
+```xml
+<TargetFramework>netstandard2.1</TargetFramework>
+```
+
+`netstandard2.1` is the highest standard compatible with both Unity's Mono runtime (used by Gorilla Tag) and the BepInEx/MelonLoader plugin hosts. It provides access to `System.Span<T>`, `System.HashCode`, and other APIs introduced in .NET Standard 2.1 while remaining portable across all supported mod-loader versions.

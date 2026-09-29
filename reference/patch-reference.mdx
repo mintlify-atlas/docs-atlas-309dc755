@@ -1,0 +1,337 @@
+---
+title: "GreyServers Harmony Patch Reference"
+sidebarTitle: "Patch Reference"
+description: "Complete reference for all Harmony patches in GreyServers, including target types, methods, patch types, and runtime behaviors for each patch."
+---
+
+This page is the complete reference for every Harmony patch shipped in GreyServers. Each entry lists the target type and method, the patch type (Prefix or Postfix), and a detailed description of what the patch does and why it is needed to operate on the Solaristy OS private server. Patches are registered automatically by `HarmonyPatches.ApplyHarmonyPatches()`, which calls `instance.PatchAll(Assembly.GetExecutingAssembly())` — no manual registration is required when adding new patches.
+
+## Networking & Authentication
+
+These patches intercept Photon and PlayFab connection calls to redirect the client from the official Gorilla Tag infrastructure to the Solaristy OS private server.
+
+<AccordionGroup>
+  <Accordion title="Patch_PhotonNetwork_Connect">
+    | Field | Value |
+    |---|---|
+    | Target class | `PhotonNetwork` |
+    | Target method | `ConnectUsingSettings(AppSettings, bool)` |
+    | Patch type | Prefix |
+
+    Runs before every call to `PhotonNetwork.ConnectUsingSettings`. It mutates the `AppSettings` reference in-place, replacing the official Photon application IDs with the private-server credentials:
+
+    - `AppIdRealtime` → `7ef2fd75-edeb-4e41-9af1-cff0e7f07b3f`
+    - `AppIdVoice` → `16818aa8-e19f-4cb0-a8ce-4a1fdf0ea451`
+
+    Because the parameter is passed by `ref`, the change is visible to the original method, which then connects to the correct Photon cloud region for Solaristy OS.
+  </Accordion>
+
+  <Accordion title="Patch_SetAuthenticationValues_ForceNone">
+    | Field | Value |
+    |---|---|
+    | Target class | `NetworkSystemPUN` |
+    | Target method | `SetAuthenticationValues` |
+    | Patch type | Prefix |
+
+    Forces `authValues.AuthType = CustomAuthenticationType.None` and assigns the values to `PhotonNetwork.AuthValues` before the original method runs. This prevents the official custom-auth handshake from being sent to Photon, which would be rejected by the private-server Photon app.
+  </Accordion>
+
+  <Accordion title="Patch_AuthenticationParameters">
+    | Field | Value |
+    |---|---|
+    | Target class | `PhotonAuthenticator` |
+    | Target method | `SetCustomAuthenticationParameters` |
+    | Patch type | Prefix |
+
+    Builds a fresh `AuthenticationValues` object with `AuthType = CustomAuthenticationType.None`, populates it with the custom auth data dictionary via `SetAuthPostData`, then calls `NetworkSystem.Instance.SetAuthenticationValues`. The original method is still allowed to run after the prefix; the re-built values ensure no official token is included in the Photon auth payload.
+  </Accordion>
+
+  <Accordion title="PlayFabAuthPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `PlayFabAuthenticator` |
+    | Target method | `AuthenticateWithPlayFab` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Replaces the Steam-based login flow entirely. On first run it generates a `System.Guid` and persists it under the `PlayerPrefs` key `PlayFabCustomId`. On subsequent runs it reloads the stored GUID. It then calls `PlayFabClientAPI.LoginWithCustomID` with `CreateAccount = true` against the private PlayFab title `1457F3`. On success, it uses reflection to write `_playFabPlayerIdCache` and `_sessionTicket` onto the authenticator instance and then calls the private `AdvanceLogin` method via `AccessTools`, seamlessly continuing the normal post-login flow.
+  </Accordion>
+
+  <Accordion title="Patch_GetAcceptedAgreements">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaServer` |
+    | Target method | `GetAcceptedAgreements` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Intercepts the server-side agreement check. It iterates over every key in `request.AgreementKeys` and adds each one to a local dictionary with the value `"accepted"`, then immediately invokes `successCallback` with that dictionary. The private server does not run an agreements endpoint, so this patch fulfils the callback contract locally without any network call.
+  </Accordion>
+
+  <Accordion title="Patch_ForceDLCOwnershipLegacy">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaServer` |
+    | Target method | `AddOrRemoveDLCOwnership` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Routes DLC ownership resolution through the private server's `AddOrRemoveDLCOwnershipV2` CloudScript instead of the official endpoint. It calls `PlayFabClientAPI.ExecuteCloudScript` with `FunctionName = "AddOrRemoveDLCOwnershipV2"`, then converts the `ExecuteCloudScriptResult` into an `ExecuteFunctionResult` and forwards it to the original `successCallback`. Error conditions are forwarded to `errorCallback` with a descriptive message.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Cosmetics
+
+These patches unlock all cosmetics for players on the private server, guard against null-reference crashes in the V2 cosmetics spawner, and replace the purchase flow with a free CloudScript call.
+
+<AccordionGroup>
+  <Accordion title="CosmeticPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `CosmeticsController` |
+    | Target method | `GetCosmeticsPlayFabCatalogData` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Uses reflection to resolve the private `AddCosmetic(string id)` method, the `_playerOwnedCosmeticsAge` field, the `BuilderSetManager._starterPieceSets` field, and the `initializedCosmetics` field before proceeding. Returns `true` (falls back to the original) if any reflection lookup fails.
+
+    When all fields are resolved it:
+    1. Calls `AddCosmetic("Slingshot")` explicitly.
+    2. Iterates `BuilderSetManager.instance._starterPieceSets` and calls `AddCosmetic(set.playfabID)` for every non-null Builder Set piece.
+    3. Iterates `__instance.allCosmetics` and calls `AddCosmetic(item.itemName)` for every item with a non-empty name, also setting `OwnedCosmeticsAge[item.itemName] = 0`.
+    4. Sets `initializedCosmetics = true` via reflection.
+
+    This gives every player on the private server the full cosmetics catalog without a PlayFab catalog fetch.
+  </Accordion>
+
+  <Accordion title="CosmeticsV2Spawner_DPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `CosmeticsV2Spawner_Dirty` |
+    | Target method | `ProcessLoadOpInfos` |
+    | Patch type | Prefix (conditionally returns `false`) |
+
+    Guards against two crash scenarios in the V2 cosmetics spawner:
+
+    1. **Unregistered rig**: if `_gVRRigDatasIndexByRig` does not contain the `rig` argument, it logs a warning and either registers the offline rig at index `0` or returns `false` to skip processing for non-offline rigs.
+    2. **Null load-op data**: if the `_g_loadOpInfosForRigAndCosmeticIDDicts` array is null or the entry for the rig's index is null, it calls `PrepareLoadOpInfos` via `Traverse` and re-reads the array. If the data is still null or the cosmetic ID is not present in the rig's dictionary, it returns `false` with an error log, preventing a `NullReferenceException`.
+
+    All field and method access is performed via `Traverse` so the patch does not require direct access to private members.
+  </Accordion>
+
+  <Accordion title="PackedIDArrayPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `CosmeticsController.CosmeticSet` |
+    | Target method | `ToPackedIDArray` |
+    | Patch type | Prefix |
+
+    Iterates `__instance.items` before the serialization method runs. Any item whose `itemName` is null or empty is replaced with `CosmeticsController.instance.nullItem`. This prevents downstream serialization errors when a `CosmeticSet` contains placeholder or uninitialized slots.
+  </Accordion>
+
+  <Accordion title="Patch_PurchaseItem">
+    | Field | Value |
+    |---|---|
+    | Target class | `CosmeticsController` |
+    | Target method | `PurchaseItem` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Replaces the standard purchase flow (which contacts the official PlayFab store) with a call to the `buyFreeCosmetic` CloudScript on the private server. The request passes `itemID` as the function parameter. On success, the item is added to `allCosmeticsDict` if not already present, `GetCosmeticsPlayFabCatalogData` is triggered on the offline rig to refresh the catalog, and `itemToBuy` is reset to `nullItem`. On error, `itemToBuy` is also reset to `nullItem` to leave the UI in a clean state.
+  </Accordion>
+
+  <Accordion title="Patch_AdvanceLogin">
+    | Field | Value |
+    |---|---|
+    | Target class | `PlayFabAuthenticator` |
+    | Target method | `AdvanceLogin` |
+    | Patch type | Postfix |
+
+    Runs after `AdvanceLogin` completes. If `CosmeticsController.instance` is not null it:
+    1. Calls `GetCurrencyBalance()` to refresh the player's in-game currency.
+    2. Calls `GetCosmeticsPlayFabCatalogData()` on the offline VR rig (if both `GorillaTagger.Instance` and `offlineVRRig` are non-null) to populate the full cosmetics catalog.
+    3. Calls `CosmeticsController.instance.Initialize()` to set up internal state.
+    4. Calls `CosmeticsController.instance.UpdateWardrobeModelsAndButtons()` to refresh the wardrobe UI.
+
+    This sequence ensures cosmetics are fully initialized immediately after login on the private server.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Anti-Cheat & Subscriptions
+
+These patches disable the Mothership anti-cheat module and resolve subscription state locally, since neither service is available on the private server.
+
+<AccordionGroup>
+  <Accordion title="MothershipPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `MothershipClientApiUnity` |
+    | Target method | `IsEnabled` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Unconditionally sets `__result = false` and returns `false`, so `IsEnabled` always reports that the Mothership module is disabled. This prevents the game from waiting on or communicating with the Mothership anti-cheat service, which is not present on the private server.
+  </Accordion>
+
+  <Accordion title="Patch_SubscriptionResolutionWithoutMothership">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaTagScripts.SubscriptionManager` |
+    | Target method | `InitializePersonalSubscriptionData` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Resolves subscription state without the Mothership. It locates four private fields via `AccessTools`: `_localSubscriptionDataInitialized`, `_localSubscriptionDataResolved`, `OnLocalSubscriptionData`, and `OnLocalSubscriptionDataResolved`. If any field is missing, it logs an error and returns `true` to fall back to native initialization.
+
+    Otherwise it sets both boolean fields to `true` (marking subscriptions as initialized and resolved) and invokes both `Action` callbacks, signalling to the rest of the game that subscription data is available (as inactive). If the data was already resolved, the patch exits early without re-invoking the callbacks.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## TOS & Legal
+
+These patches bypass the various terms-of-service, age-verification, and KID-check screens that would otherwise block the client from progressing on a private server where no legal endpoint exists.
+
+<AccordionGroup>
+  <Accordion title="TOSPatches.Update">
+    | Field | Value |
+    |---|---|
+    | Target class | `LegalAgreements` |
+    | Target method | `Update` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Sets `ControllerInputPoller.instance.leftControllerPrimary2DAxis.y = -1f` to simulate scrolling to the bottom of the agreement, and sets the private `_currentAge` field to `10f` via `Traverse`, satisfying the age requirement. Returns `false` to prevent the original `Update` logic from running.
+
+    <Note>
+      This patch is derived from *ii's Stupid Menu* by Goldentrophy Software (MIT/GPL-3.0). The original copyright notice in `TOSPatches.cs` must be preserved in any distributed fork.
+    </Note>
+  </Accordion>
+
+  <Accordion title="TOSPatches.PostUpdateModIO">
+    | Field | Value |
+    |---|---|
+    | Target class | `ModIOTermsOfUse_v1` |
+    | Target method | `PostUpdate` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Calls `__instance.TurnPage(999)` to jump to the final page of the mod.io TOS, simulates a downward scroll on the left controller axis, and sets `_currentAge` to `0.1f` via `Traverse`. This satisfies the scroll-to-accept and age-check conditions without user interaction.
+  </Accordion>
+
+  <Accordion title="TOSPatches.PostUpdateAgeSlider">
+    | Field | Value |
+    |---|---|
+    | Target class | `AgeSlider` |
+    | Target method | `PostUpdate` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Sets `_currentAge` to `21` (adult age) and then to `0.1f` via `Traverse` on the `AgeSlider` instance, bypassing the age-slider interaction requirement.
+  </Accordion>
+
+  <Accordion title="TOSPatches.StartOverlay">
+    | Field | Value |
+    |---|---|
+    | Target class | `PrivateUIRoom` |
+    | Target method | `StartOverlay` |
+    | Patch type | Prefix (conditionally skips original) |
+
+    Returns `!enabled`. Because `enabled` is always `true`, this patch always returns `false`, blocking the `StartOverlay` call and preventing the private-room UI overlay from appearing.
+  </Accordion>
+
+  <Accordion title="TOSPatches.UseKID">
+    | Field | Value |
+    |---|---|
+    | Target class | `KIDManager` |
+    | Target method | `UseKID` |
+    | Patch type | Prefix (returns `false` — skips original) |
+
+    Sets `__result = Task.FromResult(false)` and returns `false`, causing `UseKID` to immediately resolve as `false` (KID not required) without contacting the KID verification service.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## UI
+
+These patches customise the in-game computer terminal screens and scoreboard to work correctly in the private-server environment.
+
+<AccordionGroup>
+  <Accordion title="GorillaComputerScreenPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaComputer` |
+    | Target method | `UpdateScreen` |
+    | Patch type | Postfix |
+
+    After `UpdateScreen` runs, checks whether `__instance.currentState == GorillaComputer.ComputerState.Startup`. If so, it reads `PhotonNetwork.CountOfPlayers` and replaces the screen text with the Solaristy OS branding:
+
+    ```
+    Solaristy OS
+
+    <player_count> PLAYERS ONLINE
+
+    0 USERS BANNED YESTERDAY
+
+    PRESS ANY KEY TO BEGIN
+    ```
+
+    Using a Postfix ensures the custom text overwrites whatever `UpdateScreen` rendered last, without needing to prevent the original method from running.
+  </Accordion>
+
+  <Accordion title="ComputerPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaComputer` |
+    | Target method | `GeneralFailureMessage` |
+    | Patch type | Prefix (conditionally skips original) |
+
+    Inspects the `failMessage` string. If it contains `"BANNED"` or `"AUTHENTICATE"`, the patch calls `PhotonNetwork.ConnectUsingSettings()` (which in turn is intercepted by `Patch_PhotonNetwork_Connect` to use the private-server app IDs) and returns `false` to suppress the error message. For any other failure message the original method runs normally.
+  </Accordion>
+
+  <Accordion title="ComputerPatchRoom">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaComputer` |
+    | Target method | `ProcessRoomState` |
+    | Patch type | Prefix (conditionally skips original) |
+
+    When the player presses Enter (`GorillaKeyboardBindings.enter`) and `__instance.roomToJoin` is non-empty, it calls `PhotonNetworkController.Instance.AttemptToJoinSpecificRoom(__instance.roomToJoin, JoinType.Solo)`, clears `roomToJoin`, and returns `false`. Otherwise it returns `true` and lets the original handler run.
+  </Accordion>
+
+  <Accordion title="ComputerPatchName">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaComputer` |
+    | Target method | `ProcessNameState` |
+    | Patch type | Prefix (conditionally skips original) |
+
+    When the player presses Enter and `__instance.currentName` is non-empty, it calls `NetworkSystem.Instance.SetMyNickName(__instance.currentName)`, copies `currentName` to `savedName`, and returns `false`. Otherwise it falls through to the original.
+  </Accordion>
+
+  <Accordion title="ComputerLoadingPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaComputer` |
+    | Target method | `SwitchToLoadingState` |
+    | Patch type | Prefix (always returns `true`) |
+
+    A pass-through patch that always returns `true`, allowing the original `SwitchToLoadingState` to execute. It exists to ensure the loading state transition is not inadvertently blocked by any other patch applied lower in the chain.
+  </Accordion>
+
+  <Accordion title="ScoreboardPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaScoreboardSpawner` |
+    | Target method | `OnJoinedRoom` |
+    | Patch type | Prefix |
+
+    Before `OnJoinedRoom` runs, checks whether `__instance.notInRoomText` is null. If it is, it assigns a new empty `GameObject` to prevent a `NullReferenceException` when the scoreboard spawner tries to toggle the text object during the join event.
+  </Accordion>
+
+  <Accordion title="GorillaLevelScreenPatch">
+    | Field | Value |
+    |---|---|
+    | Target class | `GorillaLevelScreen` |
+    | Target method | `UpdateText` |
+    | Patch type | Prefix (conditionally skips original) |
+
+    Returns `false` (skips the original) when either the injected `___myText` (`UnityEngine.UI.Text`) field is null or the instance's `MeshRenderer` component is missing. This prevents `UpdateText` from throwing a `NullReferenceException` on level-screen objects that have not been fully initialised.
+  </Accordion>
+</AccordionGroup>

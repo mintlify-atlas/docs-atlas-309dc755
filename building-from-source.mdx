@@ -1,0 +1,129 @@
+---
+title: "Build GreyServers from Source"
+sidebarTitle: "Build from Source"
+description: "Clone the GreyServers repository, configure assembly paths in Directory.Build.props, and build for BepInEx or MelonLoader using the .NET SDK."
+---
+
+Building GreyServers from source lets you target a specific mod loader, audit every line of code before running it, apply your own patches, or contribute fixes back to the project. The build system is a standard MSBuild/`dotnet` project with two named release configurations — one per supported mod loader — so switching between them is a single command-line flag.
+
+## Prerequisites
+
+Make sure the following are present on your machine before cloning:
+
+- **.NET SDK** — the project targets `netstandard2.1`, so any SDK version that supports that moniker (SDK 3.x or later) will work. Download from [dot.net](https://dot.net).
+- **Gorilla Tag** installed via Steam at the default path (`C:\Program Files (x86)\Steam\steamapps\common\Gorilla Tag`) — or somewhere else if you update `Directory.Build.props` (see below).
+- **BepInEx** or **MelonLoader** installed into the Gorilla Tag directory, because the project references their assemblies as `HintPath` references in the `.csproj`.
+
+## Clone the repository
+
+```bash
+git clone https://github.com/solaristygit/GreyServers.git
+cd GreyServers
+```
+
+## Configure paths
+
+All assembly search paths are centralised in **`Directory.Build.props`**, which MSBuild automatically imports for every project in the directory tree. Edit this file if your Gorilla Tag installation is not at the default Steam path.
+
+<CodeGroup>
+```xml Directory.Build.props
+<?xml version="1.0" encoding="utf-8" ?>
+<Project>
+  <PropertyGroup>
+    <GamePath>C:\Program Files (x86)\Steam\steamapps\common\Gorilla Tag</GamePath>
+    <GameAssemblyPath>$(GamePath)\Gorilla Tag_Data\Managed</GameAssemblyPath>
+    <BepInExAssemblyPath>$(GamePath)\BepInEx\core</BepInExAssemblyPath>
+    <PluginsPath>$(GamePath)\BepInEx\plugins</PluginsPath>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(CI)'=='TRUE'">
+    <GameAssemblyPath>.\Libs</GameAssemblyPath>
+    <BepInExAssemblyPath>.\Libs</BepInExAssemblyPath>
+    <PluginsPath>.\Libs</PluginsPath>
+    <WarningLevel>0</WarningLevel>
+  </PropertyGroup>
+</Project>
+```
+</CodeGroup>
+
+If Gorilla Tag is installed elsewhere — for example `D:\Games\Gorilla Tag` — change the `<GamePath>` value accordingly. Every other path property is derived from `$(GamePath)`, so that is the only line you need to touch for a non-default install.
+
+<Tip>
+  When the environment variable `CI` is set to `TRUE`, `Directory.Build.props` overrides all three assembly path properties to point at `.\Libs` — a local folder where you can place stub DLLs for headless CI builds. `Directory.Build.targets` also skips the post-build copy step in CI mode, so the output DLL is never written to a (non-existent) plugins folder.
+</Tip>
+
+## Build configurations
+
+The project declares four named configurations in `GreyServers.csproj`:
+
+| Configuration | Compilation symbol | Purpose |
+|---|---|---|
+| `Debug` | _(none)_ | Development build with full debug symbols. No mod-loader-specific code is compiled — useful for IDE analysis but not loadable by either mod loader. |
+| `Release` | _(none)_ | Optimised build without mod-loader bootstrap code. Used internally by `MakeRelease.ps1` for generic packaging. |
+| `BepInEx_Release` | `BEPINEX_RELEASE` | Defines `BEPINEX_RELEASE`, which switches `Plugin` to extend `BaseUnityPlugin` and adds the `[BepInPlugin]` attribute. Produces a DLL loadable by BepInEx. |
+| `MelonLoader_Release` | `MELONLOADER_RELEASE` | Defines `MELONLOADER_RELEASE`, which switches `Plugin` to extend `MelonMod` and adds the `[MelonInfo]`/`[MelonGame]` assembly attributes. Produces a DLL loadable by MelonLoader. |
+
+Build the configuration that matches your mod loader:
+
+```bash BepInEx build
+dotnet build -c BepInEx_Release
+```
+
+```bash MelonLoader build
+dotnet build -c MelonLoader_Release
+```
+
+A successful build prints `Build succeeded` with zero errors. When `CI` is not set to `TRUE`, `Directory.Build.targets` automatically copies the output DLL to `$(PluginsPath)\GreyServers\$(TargetFileName)` after every build — so the mod is deployed to your local Gorilla Tag install immediately.
+
+## Using MakeRelease.ps1
+
+`MakeRelease.ps1` is a PowerShell script that packages the built DLL into a BepInEx-style plugin folder structure and compresses it into a zip archive ready for distribution.
+
+```powershell MakeRelease.ps1
+# Needs to be at least that version, or mmm can't read the archive
+#Requires -Modules @{ ModuleName="Microsoft.PowerShell.Archive"; ModuleVersion="1.2.3" }
+$MyInvocation.MyCommand.Path | Split-Path | Push-Location # Run from this script's directory
+$Name = (ls *.csproj).BaseName
+dotnet build -c Release
+mkdir BepInEx\plugins\$Name
+cp bin\Release\netstandard2.0\$Name.dll BepInEx\plugins\$Name\
+Compress-Archive .\BepInEx\ $Name-v
+rmdir .\BepInEx\ -Recurse
+```
+
+The script:
+
+1. Changes the working directory to the folder that contains the script so relative paths resolve correctly.
+2. Reads the project name from the `.csproj` filename (`GreyServers`).
+3. Runs `dotnet build -c Release` to produce the DLL.
+4. Creates a temporary `BepInEx\plugins\GreyServers\` tree and copies the DLL into it.
+5. Zips the `BepInEx\` folder into `GreyServers-v.zip` (the release archive).
+6. Deletes the temporary folder.
+
+Run it from a PowerShell terminal in the repository root:
+
+```powershell
+.\MakeRelease.ps1
+```
+
+PowerShell 5.1 or later is required. The `Microsoft.PowerShell.Archive` module must be version 1.2.3 or above, otherwise mod manager tools cannot read the produced archive correctly.
+
+## Output location
+
+Regardless of which configuration you build, the compiled DLL is always written to:
+
+```
+bin\<Configuration>\netstandard2.1\GreyServers.dll
+```
+
+For example, a `BepInEx_Release` build produces:
+
+```
+bin\BepInEx_Release\netstandard2.1\GreyServers.dll
+```
+
+Copy this file to the appropriate location for your mod loader:
+
+- **BepInEx** → `<Gorilla Tag install>\BepInEx\plugins\GreyServers\GreyServers.dll`
+- **MelonLoader** → `<Gorilla Tag install>\Mods\GreyServers.dll`
+
+If `CI` is not set to `TRUE`, the post-build target in `Directory.Build.targets` handles the BepInEx copy automatically, so you only need to copy manually when building for MelonLoader or when running in a CI environment.

@@ -1,0 +1,298 @@
+---
+title: "Authentication and Networking in GreyServers"
+sidebarTitle: "Authentication"
+description: "How GreyServers bypasses Steam and PlayFab authentication, injects custom Photon app credentials, and connects to the Solaristy OS private server infrastructure."
+---
+
+GreyServers replaces three layers of authentication to connect to the private server infrastructure. The PlayFab title is redirected before any network call is made, the Steam/PlayFab login flow is replaced with a persistent anonymous CustomID login, and the Photon networking layer is given the private server's AppId credentials while its custom authentication requirement is disabled entirely. None of the original authentication paths are used.
+
+## PlayFab title redirection
+
+The very first thing `Plugin.Initialize()` does — before patches are even applied — is overwrite the PlayFab title ID:
+
+```csharp
+private void Initialize()
+{
+    Debug.Log("current title id is " + PlayFabSettings.TitleId);
+    PlayFabSettings.TitleId = "1457F3";
+    PlayFabAuthenticatorSettings.TitleId = "1457F3";
+
+    GreyServers.HarmonyPatches.HarmonyPatches.ApplyHarmonyPatches();
+
+    Debug.Log("setting titleid to " + PlayFabSettings.TitleId);
+    Debug.Log(PlayFabAuthenticatorSettings.AuthApiBaseUrl);
+    // ...
+}
+```
+
+The title ID `"1457F3"` belongs to the Solaristy OS private PlayFab environment. Setting both `PlayFabSettings.TitleId` and `PlayFabAuthenticatorSettings.TitleId` ensures that both the raw SDK singleton and the Gorilla Tag wrapper class point at the private backend. The `PlayFabAuthPatch` patch also re-sets `PlayFabSettings.staticSettings.TitleId` at the moment `AuthenticateWithPlayFab` fires, providing a second enforcement point.
+
+## Anonymous PlayFab login
+
+`PlayFabAuthPatch` is a Prefix on `PlayFabAuthenticator.AuthenticateWithPlayFab` — the method that normally kicks off Steam ticket authentication against the official title. The Prefix returns `false` to skip that entirely and instead performs a CustomID login against the private title:
+
+```csharp
+[HarmonyPatch(typeof(PlayFabAuthenticator), "AuthenticateWithPlayFab")]
+public static class PlayFabAuthPatch
+{
+    private static bool Prefix(PlayFabAuthenticator __instance)
+    {
+        PlayFabSettings.staticSettings.TitleId = "1457F3";
+
+        string customId = PlayerPrefs.GetString("PlayFabCustomId", "");
+        if (string.IsNullOrEmpty(customId))
+        {
+            customId = Guid.NewGuid().ToString();
+            PlayerPrefs.SetString("PlayFabCustomId", customId);
+            PlayerPrefs.Save();
+        }
+
+        PlayFabClientAPI.LoginWithCustomID(new LoginWithCustomIDRequest
+        {
+            CustomId = customId,
+            CreateAccount = true
+        },
+        (result) => {
+            __instance.StartCoroutine(AdvanceLoginWithPlayFabData(__instance, result));
+        },
+        (error) => {
+            Debug.LogError("Error logging into custom PlayFab title: " + error.GenerateErrorReport());
+        });
+
+        return false;
+    }
+```
+
+Once the login succeeds, the coroutine `AdvanceLoginWithPlayFabData` injects the returned credentials back into `PlayFabAuthenticator` via reflection and then calls `AdvanceLogin` to continue the normal post-login flow:
+
+```csharp
+    private static IEnumerator AdvanceLoginWithPlayFabData(
+        PlayFabAuthenticator instance, LoginResult result)
+    {
+        var playFabPlayerIdField =
+            AccessTools.Field(typeof(PlayFabAuthenticator), "_playFabPlayerIdCache");
+        var sessionTicketField =
+            AccessTools.Field(typeof(PlayFabAuthenticator), "_sessionTicket");
+
+        playFabPlayerIdField.SetValue(instance, result.PlayFabId);
+        sessionTicketField.SetValue(instance, result.SessionTicket);
+
+        var advanceLoginMethod =
+            AccessTools.Method(typeof(PlayFabAuthenticator), "AdvanceLogin");
+        advanceLoginMethod.Invoke(instance, null);
+
+        yield return null;
+    }
+}
+```
+
+<Info>
+  The `CustomId` is a GUID that is generated once and saved to `PlayerPrefs` under the key `"PlayFabCustomId"`. On every subsequent session the same value is loaded, so the player always logs in to the same anonymous PlayFab account on the private server and retains their inventory and progression.
+</Info>
+
+## Photon app credentials
+
+`Patch_PhotonNetwork_Connect` is a Prefix on `PhotonNetwork.ConnectUsingSettings`. The game calls this with an `AppSettings` object containing its official Photon AppId values. The patch intercepts that object by reference and replaces both IDs before the connection is established:
+
+```csharp
+[HarmonyPatch(typeof(PhotonNetwork))]
+[HarmonyPatch("ConnectUsingSettings")]
+[HarmonyPatch(new Type[] { typeof(AppSettings), typeof(bool) })]
+class Patch_PhotonNetwork_Connect
+{
+    static void Prefix(ref AppSettings appSettings)
+    {
+        Debug.Log("setting appid");
+        appSettings.AppIdRealtime = "7ef2fd75-edeb-4e41-9af1-cff0e7f07b3f";
+        appSettings.AppIdVoice   = "16818aa8-e19f-4cb0-a8ce-4a1fdf0ea451";
+    }
+}
+```
+
+`AppIdRealtime` routes game traffic (room creation, player positions, etc.) to the private Photon server region. `AppIdVoice` routes Photon Voice (proximity chat) to the corresponding private voice cluster. Because the parameter is passed `ref`, the modification is in place before Photon's connection logic ever reads the struct.
+
+## Disabling Photon custom auth
+
+The official Gorilla Tag client uses Photon's custom authentication feature to verify that a connecting client holds a valid PlayFab session ticket. Two patches disable this requirement so the private server accepts connections without that check.
+
+**`Patch_SetAuthenticationValues_ForceNone`** patches `NetworkSystemPUN.SetAuthenticationValues`, which is called when the game configures the Photon auth handshake:
+
+```csharp
+[HarmonyPatch(typeof(NetworkSystemPUN), "SetAuthenticationValues")]
+class Patch_SetAuthenticationValues_ForceNone
+{
+    static void Prefix(AuthenticationValues authValues)
+    {
+        if (authValues == null) return;
+        authValues.AuthType = CustomAuthenticationType.None;
+        PhotonNetwork.AuthValues = authValues;
+        Debug.Log("set authtype to none");
+    }
+}
+```
+
+**`Patch_AuthenticationParameters`** patches `PhotonAuthenticator.SetCustomAuthenticationParameters`, which assembles the custom auth data dictionary sent to Photon during connection:
+
+```csharp
+[HarmonyPatch(typeof(PhotonAuthenticator), "SetCustomAuthenticationParameters")]
+class Patch_AuthenticationParameters
+{
+    static void Prefix(Dictionary<string, object> customAuthData)
+    {
+        AuthenticationValues authenticationValues = new AuthenticationValues();
+        authenticationValues.AuthType = CustomAuthenticationType.None;
+        authenticationValues.SetAuthPostData(customAuthData);
+        NetworkSystem.Instance.SetAuthenticationValues(authenticationValues);
+        Debug.Log("[GreyServers] Set Photon auth data. AppVersion is: "
+                  + NetworkSystemConfig.AppVersion);
+    }
+}
+```
+
+Together, these two patches ensure `AuthType` is always `CustomAuthenticationType.None` — the private Photon server does not need to validate the client against any external auth provider.
+
+## DLC ownership & agreements
+
+**`Patch_ForceDLCOwnershipLegacy`** patches `GorillaServer.AddOrRemoveDLCOwnership`, the method that queries Steam/PlayFab to determine which paid DLC packs the player owns. The patch routes the call through the private server's own CloudScript function (`AddOrRemoveDLCOwnershipV2`) so DLC entitlements are resolved against the private title instead:
+
+```csharp
+[HarmonyPatch(typeof(GorillaServer), "AddOrRemoveDLCOwnership")]
+public static class Patch_ForceDLCOwnershipLegacy
+{
+    private static bool Prefix(
+        GorillaServer __instance,
+        Action<ExecuteFunctionResult> successCallback,
+        Action<PlayFabError> errorCallback)
+    {
+        PlayFabClientAPI.ExecuteCloudScript(new ExecuteCloudScriptRequest
+        {
+            FunctionName = "AddOrRemoveDLCOwnershipV2",
+            FunctionParameter = new { }
+        }, delegate (PlayFab.ClientModels.ExecuteCloudScriptResult result)
+        {
+            try
+            {
+                ExecuteFunctionResult executeFunctionResult = new ExecuteFunctionResult();
+                executeFunctionResult.FunctionName = result.FunctionName;
+                executeFunctionResult.FunctionResult = result.FunctionResult;
+                executeFunctionResult.Error = null;
+                successCallback?.Invoke(executeFunctionResult);
+            }
+            catch (Exception ex)
+            {
+                errorCallback?.Invoke(new PlayFabError
+                {
+                    ErrorMessage = "Error converting ExecuteCloudScriptResult: " + ex.Message
+                });
+            }
+        }, errorCallback, null, null);
+        return false;
+    }
+}
+```
+
+**`Patch_GetAcceptedAgreements`** patches `GorillaServer.GetAcceptedAgreements` and returns a pre-built dictionary with every requested agreement key set to `"accepted"`, bypassing any server-side agreement check:
+
+```csharp
+[HarmonyPatch(typeof(GorillaServer), "GetAcceptedAgreements")]
+public static class Patch_GetAcceptedAgreements
+{
+    private static bool Prefix(
+        GetAcceptedAgreementsRequest request,
+        Action<Dictionary<string, string>> successCallback)
+    {
+        var acceptedAgreements = new Dictionary<string, string>();
+        if (request.AgreementKeys != null)
+        {
+            foreach (string key in request.AgreementKeys)
+                acceptedAgreements[key] = "accepted";
+        }
+        successCallback?.Invoke(acceptedAgreements);
+        return false;
+    }
+}
+```
+
+## Mothership disable
+
+Gorilla Tag's Mothership system is an anti-cheat client that runs alongside the game and can flag or disconnect modded clients. GreyServers disables it at the API level with two patches.
+
+**`MothershipPatch`** is a Prefix on `MothershipClientApiUnity.IsEnabled`. It forces the return value to `false` and skips the original, so every code path that checks whether Mothership is active gets a hard `false`:
+
+```csharp
+[HarmonyPatch(typeof(MothershipClientApiUnity), nameof(MothershipClientApiUnity.IsEnabled))]
+public static class MothershipPatch
+{
+    public static bool Prefix(ref bool __result)
+    {
+        __result = false;
+        return false;
+    }
+}
+```
+
+**`Patch_SubscriptionResolutionWithoutMothership`** is a Prefix on `SubscriptionManager.InitializePersonalSubscriptionData`. Normally Mothership provides subscription data (e.g. Gorilla Tag+ status); with Mothership disabled that call would hang. The patch resolves subscription data locally as inactive, firing the expected callbacks so the rest of the game continues loading normally:
+
+```csharp
+[HarmonyPatch(typeof(GorillaTagScripts.SubscriptionManager), "InitializePersonalSubscriptionData")]
+public static class Patch_SubscriptionResolutionWithoutMothership
+{
+    private static bool Prefix()
+    {
+        var initializedField  = AccessTools.Field(
+            typeof(GorillaTagScripts.SubscriptionManager), "_localSubscriptionDataInitialized");
+        var resolvedField     = AccessTools.Field(
+            typeof(GorillaTagScripts.SubscriptionManager), "_localSubscriptionDataResolved");
+        var initializedCallbackField = AccessTools.Field(
+            typeof(GorillaTagScripts.SubscriptionManager), "OnLocalSubscriptionData");
+        var resolvedCallbackField    = AccessTools.Field(
+            typeof(GorillaTagScripts.SubscriptionManager), "OnLocalSubscriptionDataResolved");
+
+        if (initializedField == null || resolvedField == null
+            || initializedCallbackField == null || resolvedCallbackField == null)
+        {
+            Debug.LogError("[GreyServers] Subscription fields were not found; "
+                           + "leaving native initialization enabled.");
+            return true;
+        }
+
+        if ((bool)resolvedField.GetValue(null)) return false;
+
+        initializedField.SetValue(null, true);
+        resolvedField.SetValue(null, true);
+        Debug.Log("[GreyServers] Mothership is disabled; resolving local subscriptions as inactive.");
+        (initializedCallbackField.GetValue(null) as Action)?.Invoke();
+        (resolvedCallbackField.GetValue(null) as Action)?.Invoke();
+        return false;
+    }
+}
+```
+
+## TOS and age bypass
+
+`TOSPatches.cs` contains five nested Prefix patches that collectively skip every legal and age-verification screen the game shows before the main menu loads. All five are gated on a shared `enabled` flag (currently hardcoded to `true`).
+
+| Patch class | Target | What it does |
+|---|---|---|
+| `TOSPatches.Update` | `LegalAgreements.Update` | Simulates the left joystick scrolling down (`y = -1f`) and sets `_currentAge` to advance the scroll timer, effectively auto-completing the TOS scroll requirement. Returns `false` to skip the original update. |
+| `TOSPatches.PostUpdateModIO` | `ModIOTermsOfUse_v1.PostUpdate` | Calls `TurnPage(999)` to jump to the last page, simulates scroll, and resets `_currentAge` — instantly completing the mod.io TOS flow. |
+| `TOSPatches.PostUpdateAgeSlider` | `AgeSlider.PostUpdate` | Sets `_currentAge` to `21` (meeting any age requirement) then immediately resets the scroll timer to `0.1f` so the slider is treated as fully settled. |
+| `TOSPatches.StartOverlay` | `PrivateUIRoom.StartOverlay` | Returns `!enabled` — which is `false` when the mod is active — blocking the overlay from opening entirely. |
+| `TOSPatches.UseKID` | `KIDManager.UseKID` | Sets `__result` to `Task.FromResult(false)` and returns `false`, causing the KID (Kids Internet Design and Safety Act) manager to report that KID verification is not required. |
+
+```csharp
+[HarmonyPatch(typeof(KIDManager), "UseKID")]
+public class UseKID
+{
+    private static bool Prefix(ref Task<bool> __result)
+    {
+        if (!enabled) return true;
+        __result = Task.FromResult(false);
+        return false;
+    }
+}
+```
+
+<Warning>
+  These patches bypass all legal agreements and age verification on behalf of the user. They are designed for the private server environment where those checks are not relevant — do not use GreyServers on the official Gorilla Tag servers.
+</Warning>
